@@ -1,0 +1,44 @@
+name = "AssessmentTools"
+uuid = "5b0c7f3e-8a52-4d6e-9c1f-2e7a4b9d6c01"
+version = "0.1.0"
+authors = ["Jae S. Choi"]
+
+[deps]
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Optim = "429524aa-4258-5aef-a3af-852621145aeb"
+Parquet2 = "98572fba-bba0-415d-956f-fa77e587d26d"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+Turing = "fce5fe82-541a-59a6-adf8-730c64b5f9a0"
+UnicodePlots = "b8865327-cd53-5732-bb35-84acbb429228"
+Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
+
+[compat]
+CSV = "1.1.0"
+DataFrames = "1.8.2"
+DataInterpolations = "10.1.3"
+Distributions = "0.25.131"
+ForwardDiff = "0.10, 1"
+Interpolations = "0.16.3"
+Optim = "1, 2"
+Parquet2 = "0.2.37"
+SpecialFunctions = "2"
+Turing = "0.49.0"
+UnicodePlots = "3.9.0"
+Zarr = "0.11.1"
+julia = "1.9"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
