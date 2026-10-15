@@ -73,7 +73,7 @@ function plot_state_variables(res::DelayDifferenceResult)
     p = lineplot(res.years, res.biomass; name = "Biomass",
                  title = "Delay-Difference Trajectory", xlabel = "Year",
                  ylabel = "Biomass / Removals", color = :green, width = 65, height = 15)
-    lineplot!(p, res.years, res.removals_biomass; name = "Removals", color = :red)
+    lineplot!(p, res.years, res.catches_biomass; name = "Removals", color = :red)
     lineplot!(p, res.years, res.recruits_biomass; name = "Recruitment (Wt)", color = :cyan)
     return p
 end

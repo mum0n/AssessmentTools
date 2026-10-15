@@ -149,38 +149,74 @@ function extract_annual_recruitment(dde_simulation; stage_index::Integer = 2, ta
 end
 
 """
-    bayesian_delay_difference_model(catches_biomass, recruits, obs_survey, cfg; obs_cv = 0.20)
+    bayesian_delay_difference_model(catches_biomass, recruits, obs_survey, cfg;
+                                    obs_cv = 0.20,
+                                    prior_s_mu = nothing, prior_s_sd = 0.05,
+                                    s_lower = 0.30, s_upper = 0.95,
+                                    prior_b0_mu = 50.0, prior_b0_sd = 15.0,
+                                    b0_lower = 5.0, b0_upper = 200.0,
+                                    prior_q_mu = 1.0, prior_q_sd = 0.30,
+                                    q_lower = 0.05, q_upper = 5.0,
+                                    prior_proc_sd = 0.10, prior_proc_sd_sd = 0.05,
+                                    proc_sd_lower = 0.01, proc_sd_upper = 0.40,
+                                    prior_obs_sd_sd = 0.05,
+                                    obs_sd_lower = 0.02, obs_sd_upper = 0.60,
+                                    mu_floor = 1.0e-4)
 
 Bayesian state-space Deriso-Schnute delay-difference model implemented in `Turing.jl`:
 - `catches_biomass`: Annual observed catches in weight ``Y_t``.
 - `recruits`: Annual incoming recruitment counts ``R_t`` (e.g. from continuous DDE stage ``M_1``).
 - `obs_survey`: Relative abundance or biomass survey observations ``I_t`` (supports missing/NaN values).
 - `cfg`: DelayDifferenceConfig containing growth parameters ``(\\alpha, \\rho, w_k)`` and baseline survival.
-- `obs_cv`: Prior observation error coefficient of variation.
+- `obs_cv`: Prior mean observation error standard deviation.
 
-Estimates initial biomass ``B_0``, natural annual survival ``s``, survey catchability ``q``,
-process error ``\\sigma_p``, and latent state trajectories ``B_t, N_t``.
+Every prior mean, standard deviation and bound is a named keyword argument, so the prior
+specification is user-level rather than compiled into the model body. `prior_s_mu`
+defaults to `cfg.s`, the baseline survival from the configuration.
 """
 @model function bayesian_delay_difference_model(catches_biomass::AbstractVector{<:Real},
                                                 recruits::AbstractVector{<:Real},
                                                 obs_survey::AbstractVector,
                                                 cfg::DelayDifferenceConfig;
-                                                obs_cv::Real = 0.20)
+                                                obs_cv::Real = 0.20,
+                                                prior_s_mu::Union{Nothing, Real} = nothing,
+                                                prior_s_sd::Real = 0.05,
+                                                s_lower::Real = 0.30,
+                                                s_upper::Real = 0.95,
+                                                prior_b0_mu::Real = 50.0,
+                                                prior_b0_sd::Real = 15.0,
+                                                b0_lower::Real = 5.0,
+                                                b0_upper::Real = 200.0,
+                                                prior_q_mu::Real = 1.0,
+                                                prior_q_sd::Real = 0.30,
+                                                q_lower::Real = 0.05,
+                                                q_upper::Real = 5.0,
+                                                prior_proc_sd::Real = 0.10,
+                                                prior_proc_sd_sd::Real = 0.05,
+                                                proc_sd_lower::Real = 0.01,
+                                                proc_sd_upper::Real = 0.40,
+                                                prior_obs_sd_sd::Real = 0.05,
+                                                obs_sd_lower::Real = 0.02,
+                                                obs_sd_upper::Real = 0.60,
+                                                mu_floor::Real = 1.0e-4)
     ny = length(catches_biomass)
     length(recruits) == ny || error("recruits and catches lengths must match.")
     length(obs_survey) == ny || error("obs_survey and catches lengths must match.")
 
+    s_mu = isnothing(prior_s_mu) ? cfg.s : prior_s_mu
+
     # Priors
-    # Annual survival s = exp(-M) centered near cfg.s
-    s ~ truncated(Normal(cfg.s, 0.05), 0.30, 0.95)
+    # Annual survival s = exp(-M) centered near the configured baseline survival
+    s ~ truncated(Normal(s_mu, prior_s_sd), s_lower, s_upper)
     # Initial exploitable biomass B_0
-    b0 ~ truncated(Normal(50.0, 15.0), 5.0, 200.0)
+    b0 ~ truncated(Normal(prior_b0_mu, prior_b0_sd), b0_lower, b0_upper)
     # Survey catchability q (mapping biomass to relative survey index)
-    q ~ truncated(Normal(1.0, 0.30), 0.05, 5.0)
+    q ~ truncated(Normal(prior_q_mu, prior_q_sd), q_lower, q_upper)
     # Log-scale process error standard deviation
-    proc_sd ~ truncated(Normal(0.10, 0.05), 0.01, 0.40)
+    proc_sd ~ truncated(Normal(prior_proc_sd, prior_proc_sd_sd),
+                        proc_sd_lower, proc_sd_upper)
     # Observation error standard deviation
-    obs_sd ~ truncated(Normal(obs_cv, 0.05), 0.02, 0.60)
+    obs_sd ~ truncated(Normal(obs_cv, prior_obs_sd_sd), obs_sd_lower, obs_sd_upper)
 
     alpha = cfg.alpha
     rho = cfg.rho
@@ -201,11 +237,11 @@ process error ``\\sigma_p``, and latent state trajectories ``B_t, N_t``.
         mean_w = n[t] > 0.0 ? b[t] / n[t] : wk
         ct = mean_w > 0.0 ? yt / mean_w : 0.0
         n_esc = max(1e-4, n[t] - ct)
-
         exp_n = s * n_esc + rt
         exp_b = s * alpha * n_esc + s * rho * b_esc + wk * rt
 
-        # Process model with stochastic lognormal deviations
+        # Process model with stochastic lognormal deviations around the deterministic
+        # expectation defined once in `delay_difference_step`.
         log_b_next ~ Normal(log(max(1e-4, exp_b)), proc_sd)
         b[t + 1] = exp(log_b_next)
         n[t + 1] = max(1e-4, exp_n)

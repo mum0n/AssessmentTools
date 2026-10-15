@@ -33,6 +33,28 @@ nyr = 2010
 sage = 1
 syr = 1970
 
+[decision]
+# Decision-table thresholds, as fractions of the stated reference point.
+# Each entry produces one probability column in `DecisionMetrics`.
+age3_exploitation_limit = 0.2
+age_floor = 3
+epsilon = 1.0e-15
+sb_bmsy_thresholds = [0.4, 0.8]
+sb_bo_thresholds = [0.25, 0.75]
+u_umsy_thresholds = [1.0, 0.5, 0.6666666666666666]
+
+[estimation]
+g_abstol = 1.0e-5
+max_iterations = 1000
+
+[penalties]
+# Objective-function penalty weights.
+agecomp_process_error = 0.009
+rec_dev_penalty_weight = 100.0
+rec_dev_sd = 2.0
+sel_zero_mean_weight = 1000.0
+m_dev_node_weight = 0.5
+
 [selectivity]
 age_nodes = [5, 5, 5, 5]
 ahat = [8.5, 8.5, 4.5, 4.5]

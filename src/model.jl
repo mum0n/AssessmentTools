@@ -20,7 +20,8 @@ is_active(phase::Integer, ctx::PhaseContext) = 0 < phase <= ctx.phase
     ParameterBlock
 
 Contiguous block of the parameter vector. `dims = (rows, cols)`; matrices
-(`sel_par`) are stored row-major. `phase` is per element.
+scalar and vector parameters each get one element; matrices (`sel_par`) are stored
+column-major. `phase` is per element.
 """
 struct ParameterBlock
     name::String
@@ -222,14 +223,17 @@ Dimensions of the selectivity parameter matrix of one gear:
 |:----:|:---------------------------------------------|:------------|:----------------|
 | 0    | uniform (no parameters)                      | 1           | 0               |
 | 1, 6 | logistic in age (6 = fixed)                  | 1           | 2               |
-| 2    | age-specific coefficients                    | 1           | `nages - 1`     |
+| 2    | age-specific coefficients                    | 1           | 
+ages - 1`     |
 | 3    | cubic spline over age nodes                  | 1           | `age_nodes`     |
-| 4    | cubic spline over age nodes, each year       | `ny`        | `age_nodes`     |
+| 4    | cubic spline over age nodes, each year       | 
+y`        | `age_nodes`     |
 | 5    | bicubic spline over age × year nodes         | `age_nodes` | `yr_nodes`      |
 | 7    | logistic in relative log weight              | 1           | 2               |
 | 8    | logistic in age + weight deviations          | 1           | 3               |
 | 11   | logistic in length                           | 1           | 2               |
-| 12   | cubic spline in length                       | 1           | `nages - 1`     |
+| 12   | cubic spline in length                       | 1           | 
+ages - 1`     |
 """
 function selectivity_dims(t::Integer, age_nodes::Integer, yr_nodes::Integer,
                           nages::Integer, ny::Integer)
@@ -276,7 +280,8 @@ function build_layout(data::StockData, ctl::StockControl, ny::Integer, ft_count:
         end
         push!(sel, add!("sel_par[$k]", n, (rows, cols), fill(-15.0, n), fill(15.0, n),
                         fill(ph, n), init))
-        append!(names, ["sel_par[$k][$i,$j]" for i in 1:rows for j in 1:cols])
+        # Column-major, matching the storage order used by `unpack`/`assemble_x`.
+        append!(names, ["sel_par[$k][$i,$j]" for j in 1:cols for i in 1:rows])
     end
 
     ft = add!("log_ft_pars", ft_count, (ft_count, 1), fill(-30.0, ft_count),
@@ -308,17 +313,44 @@ end
     unpack(layout, x) -> NamedTuple
 
 Split the parameter vector into named blocks. `sel_par` is a vector of
-`rows × cols` matrices (one per gear).
+`rows × cols` matrices (one per gear), and each is stored **column-major**, so
+element `(i, j)` of a matrix block occupies `x[block_start + (j - 1) * rows + i]`.
 """
 function unpack(L::ParameterLayout, x::AbstractVector)
-    length(x) == L.n || error("Parameter vector has length $(length(x)); expected $(L.n).")
+    length(x) == L.n || error("Parameter vector has length $(length(x)); expected $(L.n)).")
     sel = map(L.sel_par) do b
         r, c = b.dims
-        permutedims(reshape(x[b.range], c, r))
+        reshape(x[b.range], r, c)
     end
     return (theta = x[L.theta.range], sel_par = sel, log_ft_pars = x[L.log_ft_pars.range],
             init_log_rec_devs = x[L.init_log_rec_devs.range],
             log_rec_devs = x[L.log_rec_devs.range], log_m_nodes = x[L.log_m_nodes.range])
+end
+
+"""
+    assemble_x(L::ParameterLayout, parts::NamedTuple) -> Vector{Float64}
+
+Concatenate named parameter blocks back into a full vector. The inverse of
+[`unpack`](@ref); the field names must match `unpack`'s output. `sel_par` matrices
+are stored column-major, consistently with `unpack`.
+"""
+function assemble_x(L::ParameterLayout, parts::NamedTuple)
+    out = Vector{Float64}(undef, L.n)
+    out[L.theta.range] .= vec(collect(Float64, parts.theta))
+    for (k, block) in enumerate(L.sel_par)
+        mtx = collect(Float64, parts.sel_par[k])
+        r, c = block.dims
+        size(mtx) == (r, c) ||
+            error("sel_par[$k] has size $(size(mtx)); expected ($r, $c).")
+        out[block.range] .= vec(mtx)
+    end
+    out[L.log_ft_pars.range] .= vec(collect(Float64, parts.log_ft_pars))
+    out[L.init_log_rec_devs.range] .= vec(collect(Float64, parts.init_log_rec_devs))
+    out[L.log_rec_devs.range] .= vec(collect(Float64, parts.log_rec_devs))
+    out[L.log_m_nodes.range] .= vec(collect(Float64, parts.log_m_nodes))
+    all(isfinite, out) ||
+        error("assemble_x: at least one value is non-finite.")
+    return out
 end
 
 "Indices of parameters active in `phase`."

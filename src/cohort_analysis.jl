@@ -11,7 +11,10 @@ Container for results of cohort reconstruction or Virtual Population Analysis.
 - `N::Matrix{Float64}`: Reconstructed numbers-at-age (dimension `nages × nyears`).
 - `F::Matrix{Float64}`: Estimated instantaneous fishing mortality rates (dimension `nages × nyears`).
 - `biomass_total::Vector{Float64}`: Total annual exploitable biomass.
-- `biomass_ssb::Vector{Float64}`: Annual spawning stock biomass (SSB).
+- `biomass::Vector{Float64}`: Annual (vulnerable) biomass or total abundance, \\sum_a N_{a,t}.
+- `biomass_ssb::Vector{Float64}`: Annual spawning stock measure. Equal to \\sum_a N_{a,t} w_a m_a
+  when `weight_at_age` and `maturity` are given, otherwise total abundance \\sum_a N_{a,t},
+  which is a proxy only.
 - `catch_pred::Matrix{Float64}`: Model predicted catches via Baranov catch equation.
 """
 struct VpaResult
@@ -23,10 +26,35 @@ struct VpaResult
 end
 
 """
+    _spawning_abundance(N::AbstractMatrix{<:Real}, weight_at_age, maturity) -> Vector{Float64}
+
+Annual spawning stock measure from a numbers-at-age matrix `N` (`nages × nyears`).
+
+``SSB_t = \\sum_a N_{a,t}\\, w_a\\, m_a``
+
+where `w_a` is weight at age and `m_a` maturity (spawning fraction) at age. When
+either argument is `nothing` the corresponding factor is 1, so the result is the
+total abundance ``\\sum_a N_{a,t}``; that is a proxy for SSB, not SSB itself.
+Both vectors, when given, must have length equal to `size(N, 1)`.
+"""
+function _spawning_abundance(N::AbstractMatrix{<:Real},
+                             weight_at_age::Union{Nothing, AbstractVector{<:Real}},
+                             maturity::Union{Nothing, AbstractVector{<:Real}})
+    na = size(N, 1)
+    wa = isnothing(weight_at_age) ? ones(Float64, na) : collect(Float64, weight_at_age)
+    ma = isnothing(maturity) ? ones(Float64, na) : collect(Float64, maturity)
+    length(wa) == na || error("weight_at_age must have $na elements.")
+    length(ma) == na || error("maturity must have $na elements.")
+    return [sum(N[a, t] * wa[a] * ma[a] for a in 1:na) for t in axes(N, 2)]
+end
+
+"""
     popes_cohort_analysis(catches::AbstractMatrix{<:Real}, M;
                           terminal_f::AbstractVector{<:Real},
                           plus_group_f::Union{Nothing, Real, AbstractVector{<:Real}} = nothing,
-                          plus_group_age::Integer = size(catches, 1)) -> VpaResult
+                          plus_group_age::Integer = size(catches, 1),
+                          weight_at_age = nothing,
+                          maturity = nothing) -> VpaResult
 
 Compute historical numbers-at-age and fishing mortalities using Pope's (1972) cohort analysis:
 
@@ -41,11 +69,15 @@ N_{a,t} = N_{a+1, t+1} \\exp(M_{a,t}) + C_{a,t} \\exp\\left(\\frac{M_{a,t}}{2}\\
 - `plus_group_f`: Fishing mortality assumed for the oldest age class across years.
   If `nothing`, defaults to terminal F of the plus group.
 - `plus_group_age`: Row index designating the plus-group (defaults to `nages`).
+- `weight_at_age`: Optional weight at age; enables proper spawning biomass in `vpa.biomass_ssb`.
+- `maturity`: Optional maturity (spawning fraction) at age; enables proper SSB.
 """
 function popes_cohort_analysis(catches::AbstractMatrix{<:Real}, M;
                                terminal_f::AbstractVector{<:Real},
                                plus_group_f::Union{Nothing, Real, AbstractVector{<:Real}} = nothing,
-                               plus_group_age::Integer = size(catches, 1))
+                               plus_group_age::Integer = size(catches, 1),
+                               weight_at_age::Union{Nothing, AbstractVector{<:Real}} = nothing,
+                               maturity::Union{Nothing, AbstractVector{<:Real}} = nothing)
     na, ny = size(catches)
     length(terminal_f) == na || error("terminal_f length must match number of ages ($na).")
 
@@ -128,7 +160,7 @@ function popes_cohort_analysis(catches::AbstractMatrix{<:Real}, M;
     end
 
     b_tot = vec(sum(N, dims = 1))
-    b_ssb = vec(sum(N, dims = 1))
+    b_ssb = _spawning_abundance(N, weight_at_age, maturity)
 
     return VpaResult(N, F, b_tot, b_ssb, c_pred)
 end
@@ -143,8 +175,15 @@ end
 Bayesian state-space cohort analysis formulated in `Turing.jl`:
 - Reconstructs cohort dynamics using Pope's backward approximation.
 - Estimates terminal fishing mortalities ``F_{a, T}`` and age-specific survey catchability ``q_a``.
-- Computes likelihood of observed survey indices ``A_{a, t} \\sim \\mathrm{LogNormal}(\\log(q_a N_{a, t}), \\sigma_o)``.
-- Computes catch observation likelihood with lognormal error.
+- Computes likelihood of observed survey indices
+  ``A_{a, t} \\sim \\mathrm{LogNormal}(\\log(q_a N_{a, t}), \\sigma_o)``.
+
+Catch is an input to the reconstruction and is treated as known without error, which
+is the standard form of ADAPT and Pope cohort analysis; the only observation
+likelihood is on the survey index. The matching deterministic estimators
+([`adapt_vpa`](@ref), [`popes_cohort_analysis`](@ref)) make the same assumption, so
+adding a catch likelihood here would double-count information already used to
+condition the reconstruction.
 
 # Arguments
 - `catches`: Matrix of catch counts of size `(nages, nyears)`.
@@ -229,15 +268,22 @@ Bayesian state-space cohort analysis formulated in `Turing.jl`:
 end
 
 """
-Container for results of ADAPT Virtual Population Analysis.
+    AdaptResult
+
+Output of the SEQUENCE conditional Maximum Likelihood (cMLE) calibration used by
+[`adapt_vpa`](@ref).
 
 # Fields
-- `vpa::VpaResult`: Reconstructed population matrices ``N, F`` and biomasses.
-- `q::Vector{Float64}`: Estimated age-specific survey catchability scalars ``q_a``.
-- `residuals::Matrix{Float64}`: Residual matrix ``\\log(I_{a,t}) - \\log(q_a N_{a,t})``.
-- `terminal_f::Vector{Float64}`: Calibrated terminal year fishing mortality rates.
-- `terminal_n::Vector{Float64}`: Calibrated terminal year population abundances.
-- `ssq::Float64`: Final weighted residual sum of squares.
+- `vpa::VpaResult`: reconstructed population matrices `N`, `F` and biomasses
+- `q::Vector{Float64}`: age-specific survey catchability estimates ``q_a``
+- `residuals::Matrix{Float64}`: residual matrix ``\\log(I_{a,t}) - \\log(q_a N_{a,t})``
+- `terminal_f::Vector{Float64}`: recovered terminal-year fishing mortality rates
+- `terminal_n::Vector{Float64}`: recovered terminal-year abundances
+- `ssq::Float64`: weighted residual sum of squares at the optimum
+- `converged::Bool`: whether `Optim` reported convergence
+- `iterations::Int`: number of `Optim` iterations used
+- `residual_variance::Float64`: estimated observation error variance in log space,
+  `ssq / (n - 1)` where `n` is the number of residuals
 """
 struct AdaptResult
     vpa::VpaResult
@@ -246,6 +292,9 @@ struct AdaptResult
     terminal_f::Vector{Float64}
     terminal_n::Vector{Float64}
     ssq::Float64
+    converged::Bool
+    iterations::Int
+    residual_variance::Float64
 end
 
 """
@@ -345,13 +394,18 @@ function adapt_vpa(catches::AbstractMatrix{<:Real},
         end
     end
 
+    fin_res = filter(isfinite, res_mat)
+
     return AdaptResult(
         final_vpa,
         q_vec,
         res_mat,
         best_ft,
         final_vpa.N[:, end],
-        Optim.minimum(opt)
+        Optim.minimum(opt),
+        Optim.converged(opt),
+        Optim.iterations(opt),
+        length(fin_res) > 1 ? sum(abs2, fin_res) / (length(fin_res) - 1) : 0.0
     )
 end
 
@@ -373,7 +427,15 @@ Bayesian ADAPT Virtual Population Analysis in `Turing.jl`:
                                     survey_ages::AbstractVector{<:Integer} = 1:size(catches, 1),
                                     prior_terminal_f::AbstractVector{<:Real} = fill(0.30, size(catches, 1)),
                                     prior_f_sd::Real = 0.25,
-                                    obs_cv::Real = 0.20)
+                                    obs_cv::Real = 0.20,
+                                    prior_q_mu::Real = 0.001,
+                                    prior_q_sd::Real = 0.0005,
+                                    q_lower::Real = 1.0e-6,
+                                    q_upper::Real = 0.1,
+                                    prior_obs_sd_sd::Real = 0.05,
+                                    obs_sd_lower::Real = 0.05,
+                                    obs_sd_upper::Real = 0.60,
+                                    mu_floor::Real = 1.0e-6)
     na, ny = size(catches)
     size(survey_index) == (na, ny) || error("catches and survey_index dimensions must match.")
 
@@ -386,10 +448,10 @@ Bayesian ADAPT Virtual Population Analysis in `Turing.jl`:
     # Prior on survey catchabilities
     q = Vector{Float64}(undef, na)
     for a in 1:na
-        q[a] ~ truncated(Normal(0.001, 0.0005), 1e-6, 0.1)
+        q[a] ~ truncated(Normal(prior_q_mu, prior_q_sd), q_lower, q_upper)
     end
 
-    obs_sd ~ truncated(Normal(obs_cv, 0.05), 0.05, 0.60)
+    obs_sd ~ truncated(Normal(obs_cv, prior_obs_sd_sd), obs_sd_lower, obs_sd_upper)
 
     # Expand M
     M_mat = zeros(Float64, na, ny)
@@ -442,22 +504,32 @@ Bayesian ADAPT Virtual Population Analysis in `Turing.jl`:
 
     return (N = N, F = F, q = q, ft = ft, ssb = vec(sum(N, dims = 1)))
 end
-
 """
     standard_vpa(catches::AbstractMatrix{<:Real}, M;
                  terminal_f::AbstractVector{<:Real},
-                 tol::Real = 1e-8, max_iter::Integer = 50) -> VpaResult
+                 tol::Real = 1e-8,
+                 plus_group_age::Integer = size(catches, 1),
+                 weight_at_age = nothing,
+                 maturity = nothing) -> VpaResult
 
-Exact Virtual Population Analysis using the Gulland / Baranov catch equation solved via
-Newton-Raphson iteration for each age and year cell:
+Exact Virtual Population Analysis using the Gulland / Baranov catch equation. Each
+age-by-year cell is inverted for `F` with [`Solvers.solve_scalar_root`](@ref), which
+is driven by Pope's approximation as the starting value, so no iteration limit or
+derivative has to be maintained at this site.
 
 ```math
 \\frac{C_{a,t}}{N_{a+1,t+1}} = \\frac{F_{a,t}}{F_{a,t} + M_{a,t}} \\frac{1 - \\exp(-(F_{a,t} + M_{a,t}))}{\\exp(-(F_{a,t} + M_{a,t}))}
 ```
+
+`tol` is the root tolerance. `weight_at_age` and `maturity` are optional and enable a
+proper spawning biomass in `vpa.biomass_ssb`; see [`popes_cohort_analysis`](@ref).
 """
 function standard_vpa(catches::AbstractMatrix{<:Real}, M;
                       terminal_f::AbstractVector{<:Real},
-                      tol::Real = 1e-8, max_iter::Integer = 50)
+                      tol::Real = 1.0e-8,
+                      plus_group_age::Integer = size(catches, 1),
+                      weight_at_age::Union{Nothing, AbstractVector{<:Real}} = nothing,
+                      maturity::Union{Nothing, AbstractVector{<:Real}} = nothing)
     na, ny = size(catches)
     length(terminal_f) == na || error("terminal_f length must match number of ages ($na).")
 
@@ -511,25 +583,20 @@ function standard_vpa(catches::AbstractMatrix{<:Real}, M;
             # Target ratio: C / N_{t+1}
             target_ratio = c_val / n_next
 
-            # Initial guess via Pope's approximation
+            # Initial guess via Pope's approximation, then solve the exact Baranov
+            # catch equation for F with the package's shared scalar root solver.
             f_guess = log((n_next * exp(m_val) + c_val * exp(0.5 * m_val)) / n_next) - m_val
-            f_guess = max(0.01, f_guess)
 
-            # Newton-Raphson solver for exact Baranov F
-            f_cur = f_guess
-            for _ in 1:max_iter
-                z = f_cur + m_val
-                ez = exp(-z)
-                diff_ratio = (f_cur / z) * ((1.0 - ez) / ez) - target_ratio
-                if abs(diff_ratio) < tol
-                    break
+            # Residual: (F/Z)(1 - exp(-Z))/exp(-Z) - target, zero at the answer.
+            residual = let mv = m_val, tr = target_ratio
+                f -> begin
+                    z = f + mv
+                    ez = exp(-z)
+                    return (f / z) * ((1.0 - ez) / ez) - tr
                 end
-                # Derivative of ratio w.r.t F
-                # d/dF [ (F/Z) * (exp(Z) - 1) ]
-                d_ratio = (m_val / z^2) * (exp(z) - 1.0) + (f_cur / z) * exp(z)
-                step = diff_ratio / d_ratio
-                f_cur = max(1e-5, f_cur - step)
             end
+            f_cur = Solvers.solve_scalar_root(residual, max(0.01, f_guess);
+                                               lower = 0.0, upper = 20.0, tol = tol)
 
             F[a, t] = f_cur
             z_final = f_cur + m_val
@@ -547,5 +614,6 @@ function standard_vpa(catches::AbstractMatrix{<:Real}, M;
         end
     end
 
-    return VpaResult(N, F, vec(sum(N, dims = 1)), vec(sum(N, dims = 1)), c_pred)
+    return VpaResult(N, F, vec(sum(N, dims = 1)),
+                     _spawning_abundance(N, weight_at_age, maturity), c_pred)
 end

@@ -1,0 +1,33 @@
+# Delay-differential equation (DDE) configuration for snow crab.
+#
+# Stage order is terminal to youngest, because the growth flux runs from stage 5
+# towards stage 1; stage 6 is the terminal female class. Loaded by
+# `AssessmentTools.DelayDifferential.load_dde_config`. Every field below is required:
+# a missing key is an error, not a silent default.
+
+[dde]
+
+# Number of biological stages defined.
+num_stages = 6
+
+# Constant maturation delays in years: recruitment into a stage responds to female
+# abundance 7, 8 and 9 years earlier.
+lags = [7.0, 8.0, 9.0]
+
+# Per-stage asymptotic abundance bounds K_s.
+k_carrying_capacity = [50.0, 45.0, 35.0, 25.0, 20.0, 15.0]
+
+# Per-stage baseline natural mortality d_s.
+natural_mortality = [0.15, 0.11, 0.14, 0.17, 0.16, 0.19]
+
+# Per-stage density-dependent predation/competition mortality d_{2,s}.
+density_mortality = [0.40, 0.40, 0.40, 0.40, 0.40, 0.40]
+
+# Per-stage annual moult transition rates v_s.
+transition_rates = [0.65, 0.68, 0.61, 0.79]
+
+# Male recruitment coefficients b_5 (stage 5 entry) over the maturation lags.
+reproduction_weights_m = [0.33, 0.34, 0.33]
+
+# Female recruitment coefficients b_6 (stage 6 entry) over the maturation lags.
+reproduction_weights_f = [0.33, 0.34, 0.33]

@@ -290,7 +290,17 @@ Bayesian Leslie depletion regression in `Turing.jl`:
                                           effort_seq::AbstractVector{<:Real};
                                           midpoint_adjustment::Bool = true,
                                           prior_n0::Real = 10000.0,
-                                          prior_n0_sd::Real = 5000.0)
+                                          prior_n0_sd::Real = 5000.0,
+                                          n0_upper_factor::Real = 10.0,
+                                          prior_q_mu::Real = 0.001,
+                                          prior_q_sd::Real = 0.001,
+                                          q_lower::Real = 1.0e-7,
+                                          q_upper::Real = 0.1,
+                                          prior_sigma_mu::Real = 0.20,
+                                          prior_sigma_sd::Real = 0.10,
+                                          sigma_lower::Real = 0.01,
+                                          sigma_upper::Real = 2.0,
+                                          mu_floor::Real = 1.0e-4)
     n = length(catch_seq)
     length(effort_seq) == n || throw(DimensionMismatch("catch_seq and effort_seq lengths must match."))
 
@@ -302,12 +312,12 @@ Bayesian Leslie depletion regression in `Turing.jl`:
         cum += Float64(catch_seq[i])
     end
 
-    n0 ~ truncated(Normal(prior_n0, prior_n0_sd), cum, 10.0 * prior_n0)
-    q ~ truncated(Normal(0.001, 0.001), 1e-7, 0.1)
-    sigma ~ truncated(Normal(0.20, 0.10), 0.01, 2.0)
+    n0 ~ truncated(Normal(prior_n0, prior_n0_sd), cum, n0_upper_factor * prior_n0)
+    q ~ truncated(Normal(prior_q_mu, prior_q_sd), q_lower, q_upper)
+    sigma ~ truncated(Normal(prior_sigma_mu, prior_sigma_sd), sigma_lower, sigma_upper)
 
     for i in 1:n
-        mu = max(1e-4, q * (n0 - k_t[i]))
+        mu = max(mu_floor, q * (n0 - k_t[i]))
         cpue[i] ~ Normal(mu, sigma)
     end
 
@@ -316,15 +326,34 @@ end
 
 """
     bayesian_delury_depletion(catch_seq, effort_seq;
-                              prior_n0 = 10000.0, prior_n0_sd = 5000.0)
+                              prior_n0 = 10000.0, prior_n0_sd = 5000.0,
+                              n0_upper_factor = 10.0,
+                              prior_q_mu = 0.001, prior_q_sd = 0.001,
+                              q_lower = 1.0e-7, q_upper = 0.1,
+                              prior_sigma_mu = 0.20, prior_sigma_sd = 0.10,
+                              sigma_lower = 0.01, sigma_upper = 2.0,
+                              mu_floor = 1.0e-4)
 
 Bayesian DeLury depletion regression in `Turing.jl`:
 - Formulates log CPUE decline: ``\\log(\\mathrm{CPUE}_t) \\sim \\mathrm{Normal}(\\log(q N_0) - q E_t, \\sigma)``.
+
+Every prior mean, standard deviation and bound is a named keyword, so the prior
+specification is user-level rather than compiled into the model body.
 """
 @model function bayesian_delury_depletion(catch_seq::AbstractVector{<:Real},
                                           effort_seq::AbstractVector{<:Real};
                                           prior_n0::Real = 10000.0,
-                                          prior_n0_sd::Real = 5000.0)
+                                          prior_n0_sd::Real = 5000.0,
+                                          n0_upper_factor::Real = 10.0,
+                                          prior_q_mu::Real = 0.001,
+                                          prior_q_sd::Real = 0.001,
+                                          q_lower::Real = 1.0e-7,
+                                          q_upper::Real = 0.1,
+                                          prior_sigma_mu::Real = 0.20,
+                                          prior_sigma_sd::Real = 0.10,
+                                          sigma_lower::Real = 0.01,
+                                          sigma_upper::Real = 2.0,
+                                          mu_floor::Real = 1.0e-4)
     n = length(catch_seq)
     length(effort_seq) == n || throw(DimensionMismatch("catch_seq and effort_seq lengths must match."))
 
@@ -336,9 +365,9 @@ Bayesian DeLury depletion regression in `Turing.jl`:
         cum += Float64(effort_seq[i])
     end
 
-    n0 ~ truncated(Normal(prior_n0, prior_n0_sd), sum(catch_seq), 10.0 * prior_n0)
-    q ~ truncated(Normal(0.001, 0.001), 1e-7, 0.1)
-    sigma ~ truncated(Normal(0.20, 0.10), 0.01, 2.0)
+    n0 ~ truncated(Normal(prior_n0, prior_n0_sd), sum(catch_seq), n0_upper_factor * prior_n0)
+    q ~ truncated(Normal(prior_q_mu, prior_q_sd), q_lower, q_upper)
+    sigma ~ truncated(Normal(prior_sigma_mu, prior_sigma_sd), sigma_lower, sigma_upper)
 
     for i in 1:n
         mu = log(max(1e-4, q * n0)) - q * e_t[i]

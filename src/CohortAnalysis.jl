@@ -7,7 +7,8 @@
 
 Cohort reconstruction and Virtual Population Analysis:
 - Pope's (1972) backward cohort reconstruction approximation.
-- Exact Gulland/Baranov VPA with Newton-Raphson cohort convergence.
+- Exact Gulland/Baranov VPA, with each age-by-year `F` inverted by the shared
+  scalar root solver in [`Solvers`](@ref).
 - Spawning stock biomass and fishing mortality estimation.
 """
 module CohortAnalysis
@@ -17,6 +18,7 @@ using Statistics
 using Distributions
 using Turing
 using Optim
+using ..Solvers
 
 export VpaResult, AdaptResult
 export popes_cohort_analysis, standard_vpa, adapt_vpa

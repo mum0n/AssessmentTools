@@ -28,6 +28,9 @@ using Turing
 using Interpolations
 using DataInterpolations
 using Parquet2
+using Roots
+using ..Config
+using ..Solvers
 using Zarr
 
 # Primary model definitions

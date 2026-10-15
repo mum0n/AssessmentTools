@@ -28,6 +28,48 @@ This interactive workflow illustrates the integration of the **Deriso-Schnute de
 - Deriso, R.B. (1980). Harvesting strategies and parameter estimation for an age-structured model. *Can. J. Fish. Aquat. Sci.*, 37(2): 268–282.
 - Schnute, J. (1985). A general theory for fishery modeling. *Can. J. Fish. Aquat. Sci.*, 42(3): 414–429.
 - Choi, J.S. (2024). Continuous size-structured delay differential models for snow crab (*Chionoecetes opilio*) fisheries assessment. *DFO Can. Sci. Advis. Sec. Res. Doc.* 2024/nnn.
+
+## Method, assumptions, strengths, weaknesses
+
+**Method.** Biomass $B_t$ and numbers $N_t$ are propagated by `delay_difference_step`
+(`src/delay_difference.jl`), the single definition of the transition:
+
+```
+next_b = (s + alpha * b / k) * b - alpha * s * b^2 / k - c
+next_n = n + (alpha / k) * (next_b - b)
+```
+
+with $s = \exp(-M)$ annual survival, Ford-Brody coefficients $\rho$ and
+$\alpha = w_k - \rho\, w_{k-1}$, $k$ the carrying capacity, and $c$ the catch.
+The state-space form declares priors on $s$, $B_0$ and $q$, draws a lognormal
+process deviation about the deterministic state, and links biomass to the survey
+with a lognormal observation model.
+
+**Estimation.** Three engines run on the same Turing model object via
+`AssessmentTools.InferenceBridge`: `fit_map` (MAP point estimate, `Optim` L-BFGS),
+`sample_posterior` (NUTS chains), and `fit_vi` (variational inference). The model is
+written once; no likelihood code is duplicated per engine.
+
+**Assumptions**
+- Annual time steps; within-year biomass variation is not resolved.
+- The deterministic recursion gives the conditional mean; process deviations are
+  lognormal and independent across years.
+- Survey catchability $q$ is constant over the fitted period.
+- No age structure or gear selectivity; recruitments are supplied directly unless a
+  stock-recruit link is conditioned.
+- The Ford-Brody growth coefficients $\rho$ and $\alpha$ are fixed input, not fitted.
+
+**Strengths**
+- Few parameters; stable on short series with one abundance index.
+- One model definition serves both deterministic projection and Bayesian sampling.
+- Fast to fit, so it scales to many proposal scenarios.
+
+**Weaknesses**
+- Cannot represent age structure or selective fishing mortality.
+- Recruitment is exogenous by default, so it cannot forecast stock-driven recovery.
+- The lognormal process assumption can over-smooth volatility in short series.
+- $s$ and $q$ are weakly identified separately when the abundance index is
+  uninformative; they should be profiled or given tighter priors.
 """
 
 # ╔═╡ 50000001-0000-0000-0000-000000000002

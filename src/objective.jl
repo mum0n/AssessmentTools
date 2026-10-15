@@ -90,7 +90,9 @@ function objective_function(m::StockModel, x::AbstractVector{T}, ctx::PhaseConte
             if misc.agecomp_like == 1
                 nll_agecomp[k], A_nu[k], age_tau2[k] = dmvlogistic(O, P, misc.min_prop)
             else
-                nll_agecomp[k], A_nu[k], age_tau2[k] = dmultinom_pooled(O, P, misc.min_prop)
+                nll_agecomp[k], A_nu[k], age_tau2[k] =
+                    dmultinom_pooled(O, P, misc.min_prop;
+                                     proc_err = m.control.penalties.agecomp_process_error)
             end
         else
             A_nu[k] = zeros(T, 0, size(ac.obs, 2))
@@ -126,6 +128,7 @@ function objective_function(m::StockModel, x::AbstractVector{T}, ctx::PhaseConte
 
     # 6. Zero-mean penalties for selectivity parameters
     pen_sel_zero_mean = zeros(T, ng)
+    w_zero = m.control.penalties.sel_zero_mean_weight
     for k in 1:ng
         t = m.control.isel_type[k]
         if is_active(m.control.sel_phz[k], ctx) && !(t in (1, 6, 7, 8, 11))
@@ -133,12 +136,12 @@ function objective_function(m::StockModel, x::AbstractVector{T}, ctx::PhaseConte
             if t == 5
                 # Bicubic: ensure columns sum to zero
                 for col in eachcol(P)
-                    pen_sel_zero_mean[k] += 1000.0 * abs2(sum(col) / length(col))
+                    pen_sel_zero_mean[k] += w_zero * abs2(sum(col) / length(col))
                 end
             elseif t in (3, 4, 12)
                 # Ensure rows sum to zero
                 for row in eachrow(P)
-                    pen_sel_zero_mean[k] += 1000.0 * abs2(sum(row) / length(row))
+                    pen_sel_zero_mean[k] += w_zero * abs2(sum(row) / length(row))
                 end
             end
         end
@@ -188,19 +191,21 @@ function objective_function(m::StockModel, x::AbstractVector{T}, ctx::PhaseConte
     pen_rdevs = zero(T)
     pen_init_rdevs = zero(T)
     if is_active(m.layout.log_rec_devs.phase[1], ctx)
+        pen_cfg = m.control.penalties
         if ctx.last_phase
-            pen_rdevs = dnorm(p.log_rec_devs, 2.0)
-            pen_init_rdevs = dnorm(p.init_log_rec_devs, 2.0)
+            pen_rdevs = dnorm(p.log_rec_devs, pen_cfg.rec_dev_sd)
+            pen_init_rdevs = dnorm(p.init_log_rec_devs, pen_cfg.rec_dev_sd)
         else
-            pen_rdevs = 100.0 * sum(abs2, p.log_rec_devs)
-            pen_init_rdevs = 100.0 * sum(abs2, p.init_log_rec_devs)
+            pen_rdevs = pen_cfg.rec_dev_penalty_weight * sum(abs2, p.log_rec_devs)
+            pen_init_rdevs = pen_cfg.rec_dev_penalty_weight * sum(abs2, p.init_log_rec_devs)
         end
     end
 
     pen_mdevs = zero(T)
     if misc.n_m_nodes > 0 && is_active(misc.m_dev_phase, ctx)
         fd_m = diff(mort.log_m_devs[2:end])
-        pen_mdevs = dnorm(fd_m, misc.m_dev_sd) + 0.5 * sum(abs2, p.log_m_nodes)
+        w_mnode = m.control.penalties.m_dev_node_weight
+        pen_mdevs = dnorm(fd_m, misc.m_dev_sd) + w_mnode * sum(abs2, p.log_m_nodes)
     end
 
     f_total = sum(nll_catch) + sum(nll_survey) + sum(nll_agecomp) + nll_rec +

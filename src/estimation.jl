@@ -23,15 +23,24 @@ struct FitResult
 end
 
 """
-    fit(model; max_phase=model.layout.max_phase, iterations=1000, g_abstol=1e-5, verbose=true) -> FitResult
+    fit(model; max_phase=model.layout.max_phase, iterations=nothing, g_abstol=nothing, verbose=true) -> FitResult
 
 Fit the statistical catch-at-age model using phased estimation:
 In each phase `ph = 1:max_phase`, active parameters are updated while inactive
 parameters remain fixed at their current estimates. Gradients are computed using
 `ForwardDiff`.
+
+Iteration limit and gradient tolerance default to the values declared in the
+`[estimation]` section of the model's configuration file, so the solver settings
+are user-level configuration rather than choices compiled into this function.
+Passing `iterations` or `g_abstol` explicitly overrides the file.
 """
 function fit(m::StockModel; max_phase::Integer = m.layout.max_phase,
-             iterations::Integer = 1000, g_abstol::Real = 1e-5, verbose::Bool = true)
+              iterations::Union{Integer, Nothing} = nothing,
+              g_abstol::Union{Real, Nothing} = nothing, verbose::Bool = true)
+    ec = m.control.estimation
+    iterations = isnothing(iterations) ? ec.max_iterations : iterations
+    g_abstol = isnothing(g_abstol) ? ec.g_abstol : g_abstol
     x = copy(m.x0)
     L = m.layout
     optim_runs = Any[]
@@ -64,14 +73,18 @@ function fit(m::StockModel; max_phase::Integer = m.layout.max_phase,
         sub_lb = L.lb[act_idx]
         sub_ub = L.ub[act_idx]
 
-        # Use LBFGS from Optim.jl
+        # Use LBFGS from Optim.jl. Bounds come from the control table via
+        # `ParameterLayout.lb` / `.ub`; the prior implementation left a phase's
+        # active parameters unconstrained, so estimates such as steepness or
+        # log R0 could land outside their bounds.
         opt = Optim.Options(
             iterations = iterations,
             g_abstol = g_abstol,
             show_trace = false
         )
 
-        res = Optim.optimize(phase_obj, phase_grad!, sub_x0, Optim.LBFGS(), opt)
+        res = Optim.optimize(phase_obj, phase_grad!, sub_x0,
+                             Optim.Fminbox(Optim.LBFGS(), sub_lb, sub_ub), opt)
         x[act_idx] .= Optim.minimizer(res)
         push!(optim_runs, res)
 

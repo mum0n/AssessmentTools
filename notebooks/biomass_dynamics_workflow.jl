@@ -33,6 +33,43 @@ This interactive workflow illustrates surplus production modeling using the **`A
 - Schaefer, M.B. (1954). Some aspects of the dynamics of populations important to the management of the commercial marine fisheries. *Bull. Inter-Am. Trop. Tuna Comm.*, 1: 27–56.
 - Hilborn, R., & Walters, C.J. (1992). *Quantitative Fisheries Stock Assessment: Choice, Dynamics and Uncertainty*. Chapman and Hall, New York.
 - Polacheck, T., Hilborn, R., & Punt, A.E. (1993). Fitting surplus production models: comparing methods and measuring uncertainty. *Can. J. Fish. Aquat. Sci.*, 50(12): 2597–2607.
+
+## Method, assumptions, strengths, weaknesses
+
+**Method.** Discrete logistic surplus production with impulsive catch removal:
+
+```
+B[t+1] = max(0, B[t] + r * B[t] * (1 - B[t] / k) - C[t])
+```
+
+The same transition is exposed in normalised form as `logistic_step_frac(m, r, k, c)` with
+`m = B / k`, and both the deterministic `simulate_logistic_discrete` and the Turing model
+call that one function, so the two paths cannot drift apart.
+
+**Assumptions**
+- Biomass, catch and survey index are all in the same units and refer to the same
+  aggregate stock.
+- The survey index `I_t = q (B_t - tau C_t)` is a fixed proportion of biomass; `q` is
+  constant.
+- Equilibrium reference points `B_MSY = K/2`, `MSY = rK/4`, `F_MSY = r/2` hold only if
+  biomass is at equilibrium, which a simulated trajectory with impulsive removals is not.
+- Seasonal timing `tau` is constant across the series unless a transition year is given.
+- Log-linearised process error is independent across years.
+
+**Strengths**
+- Few parameters; fits a short or sparse catch-and-index series.
+- Equilibrium reference points have closed forms and are cheap to evaluate.
+- Process and observation error are separated, which prevents the common optimism of
+  least-squares fits on indexed data.
+- Runs fast enough for large scenario sweeps.
+
+**Weaknesses**
+- No age structure, selectivity, or ontogenetic changes in availability.
+- `K` and `q` are separately identified only through the shape of the series; with
+  low indices the surplus production curve is essentially unbounded.
+- Very sensitive to the assumed survey timing.
+- Intermittent or impulsive removals violate the equilibrium reference-point derivation,
+  so `F_MSY` should be treated as indicative rather than as an advice threshold.
 """
 
 # ╔═╡ 20000001-0000-0000-0000-000000000002

@@ -225,15 +225,19 @@ function catch_curve_linear(
 end
 
 """
-    bayesian_catch_curve(ages, catches; recruitment_age = nothing, max_age = nothing)
+    bayesian_catch_curve(ages, catches; recruitment_age = nothing, max_age = nothing,
+                         prior_z_mu = 0.40, prior_z_sd = 0.30, z_lower = 0.0, z_upper = 3.0,
+                         alpha_sd = 5.0,
+                         prior_sigma_mu = 0.20, prior_sigma_sd = 0.10,
+                         sigma_lower = 0.01, sigma_upper = 1.0)
 
 Bayesian linear catch curve regression in `Turing.jl`:
 
 ```math
 \\begin{aligned}
-Z &\\sim \\mathrm{TruncatedNormal}(0.40, 0.30, 0.0, 3.0) \\\\
-\\alpha &\\sim \\mathrm{Normal}(10.0, 5.0) \\\\
-\\sigma &\\sim \\mathrm{TruncatedNormal}(0.20, 0.10, 0.01, 1.0) \\\\
+Z &\\sim \\mathrm{TruncatedNormal}(\\mu_Z, \\sigma_Z, Z_{\\rm low}, Z_{\\rm up}) \\\\
+\\alpha &\\sim \\mathrm{Normal}(\\overline{\\log C}, \\sigma_\\alpha) \\\\
+\\sigma &\\sim \\mathrm{TruncatedNormal}(\\mu_\\sigma, \\sigma_{\\sigma}, \\sigma_{\\rm low}, \\sigma_{\\rm up}) \\\\
 \\log(C_a) &\\sim \\mathrm{Normal}(\\alpha - Z \\cdot a, \\sigma)
 \\end{aligned}
 ```
@@ -243,11 +247,26 @@ Z &\\sim \\mathrm{TruncatedNormal}(0.40, 0.30, 0.0, 3.0) \\\\
 - `catches`: Vector of observed counts or sample numbers.
 - `recruitment_age`: Optional recruitment age cutoff.
 - `max_age`: Optional maximum age cutoff.
+- `prior_z_mu`, `prior_z_sd`, `z_lower`, `z_upper`: prior mean, standard deviation and
+  admissible bounds for total mortality `Z`.
+- `alpha_sd`: standard deviation of the prior on the intercept `alpha`, centred on the
+  mean of `log C` over the used ages.
+- `prior_sigma_mu`, `prior_sigma_sd`, `sigma_lower`, `sigma_upper`: prior mean, standard
+  deviation and admissible bounds for the observation standard deviation.
 """
 @model function bayesian_catch_curve(ages::AbstractVector{<:Real},
                                      catches::AbstractVector{<:Real};
                                      recruitment_age::Union{Nothing, Real} = nothing,
-                                     max_age::Union{Nothing, Real} = nothing)
+                                     max_age::Union{Nothing, Real} = nothing,
+                                     prior_z_mu::Real = 0.40,
+                                     prior_z_sd::Real = 0.30,
+                                     z_lower::Real = 0.0,
+                                     z_upper::Real = 3.0,
+                                     alpha_sd::Real = 5.0,
+                                     prior_sigma_mu::Real = 0.20,
+                                     prior_sigma_sd::Real = 0.10,
+                                     sigma_lower::Real = 0.01,
+                                     sigma_upper::Real = 1.0)
     length(ages) == length(catches) || throw(DimensionMismatch("ages and catches lengths must match."))
 
     a0 = isnothing(recruitment_age) ? ages[argmax(catches)] : recruitment_age
@@ -261,9 +280,9 @@ Z &\\sim \\mathrm{TruncatedNormal}(0.40, 0.30, 0.0, 3.0) \\\\
     log_catches = log.(Float64.(catches[mask]))
 
     # Priors
-    z ~ truncated(Normal(0.40, 0.30), 0.0, 3.0)
-    alpha ~ Normal(mean(log_catches), 5.0)
-    sigma ~ truncated(Normal(0.20, 0.10), 0.01, 1.0)
+    z ~ truncated(Normal(prior_z_mu, prior_z_sd), z_lower, z_upper)
+    alpha ~ Normal(mean(log_catches), alpha_sd)
+    sigma ~ truncated(Normal(prior_sigma_mu, prior_sigma_sd), sigma_lower, sigma_upper)
 
     for i in eachindex(sub_ages)
         mu = alpha - z * (sub_ages[i] - sub_ages[1])

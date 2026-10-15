@@ -36,6 +36,48 @@ This notebook demonstrates historical stock reconstruction using the **`Assessme
 - Pope, J.G. (1972). An investigation of the accuracy of virtual population analysis using cohort analysis. *ICNAF Res. Bull.*, 9: 65–74.
 - Gavaris, S. (1988). An adaptive framework for the estimation of population size. *CAFSAC Res. Doc.* 88/29. 12 p.
 - Megrey, B.A. (1989). Review and comparison of age-structured stock assessment models from theoretical and applied points of view. *Am. Fish. Soc. Symp.*, 6: 8–48.
+
+## Method, assumptions, strengths, weaknesses
+
+**Method.** Catch-at-age in numbers is inverted into abundance and mortality by three
+procedures of increasing rigour, all in `src/cohort_analysis.jl`:
+
+1. Pope's (1972) approximation: `N[a,t] = N[a+1,t+1] * exp(M) + C[a,t] * exp(M/2)`,
+   with `F[a,t] = log(N[a,t]/N[a+1,t+1]) - M`. One backward sweep per year.
+2. Gulland VPA: inverts the Baranov catch equation exactly by Newton-Raphson per cell.
+3. ADAPT: calibrates terminal-year fishing mortality by minimising log-survey residuals,
+   with catchability `q[a]` profiled analytically as
+   `log q[a] = mean( log I[a,t] - log N[a,t] )` over the years where the survey is defined.
+
+**Assumptions**
+- `M` is known and constant (or supplied per age and year).
+- Catch is known without error, and in numbers, not biomass.
+- The plus group is selected as `plus_group_age`; its `F` is assumed constant across
+  years unless `plus_group_f` is given.
+- The backward recursion conditions on the terminal-year `F`, so terminal `F` propagates
+  into every earlier year through the cohort.
+- The survey index maps to the modelled abundance multiplicatively (`I = q N`), with
+  log-scale errors.
+
+**Weakness of the plus group.** Because the oldest class accumulates, small errors in the
+terminal `F` are amplified into the plus group and then into adjacent cohorts.
+
+**Strengths**
+- Requires only catch-at-age and `M`, so it works on historical stocks with no survey.
+- Conditional profiling of `q[a]` removes as many nuisance parameters as there are
+  tuned ages, which is cheap and avoids the degeneracy between `q[a]` and `N[a,t]`.
+- Pope's approximation and Gulland VPA bound the answer; divergence between them is a
+  useful diagnostic for mid-year catch timing.
+- `adapt_vpa` reports `converged`, `iterations` and `residual_variance`, so the
+  calibration is auditable rather than a black box.
+
+**Weaknesses**
+- No stock-recruitment function and no feedback from biomass to recruitment, so the
+  terminal-year estimate carries the projection.
+- `M` is assumed exact; systematic bias in `M` maps one-to-one into bias in `F`.
+- Without weight-at-age, `biomass_ssb` is total abundance and must not be read as SSB
+  (see `REVIEW.md` §1.1 item 6); pass `weight_at_age` and `maturity` for a true SSB.
+- With a weak survey the ADAPT objective is nearly flat and `F_term` is weakly identified.
 """
 
 # ╔═╡ 30000001-0000-0000-0000-000000000002

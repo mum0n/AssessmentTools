@@ -36,6 +36,52 @@ Julia `AssessmentTools` package.
 - Davies, T.D., & Jonsen, I.D. (2011). Identifying cryptic population structure and evaluating recovery potential for Cusk (*Brosme brosme*). *DFO Can. Sci. Advis. Sec. Res. Doc.* 2011/049.
 - Fournier, D.A., Hampton, J., & Sibert, J.R. (1998). MULTIFAN-CL: a length-based, age-structured model for fisheries stock assessment. *Can. J. Fish. Aquat. Sci.*, 55(9): 2105–2116.
 - Methot, R.D., & Wetzel, C.R. (2013). Stock synthesis: a biological and statistical framework for fish stock assessment and fishery management. *Fish. Res.*, 142: 86–99.
+
+## Method, assumptions, strengths, weaknesses
+
+**Method.** The same Stock Synthesis-style statistical catch-at-age engine used for
+silver hake, configured for cusk from `data/cusk/` (`data.dat`, `control.ctl`,
+`parameters.par`). Ages are 1 to 30 over 1970–2010 (`sage = 1`, `nage = 30`,
+`ny = 41`), with multi-gear catches assumed to fish a common age structure.
+
+**Model structure**
+- Numbers at age evolve as `N[t+1, a+1] = N[t, a] * exp(-Z[t, a])` with a plus group.
+- Fishing mortality by gear is `F[t, g]` with selectivity `s[g, a]`, so
+  `Z[t, a] = M + sum_g s[g, a] * F[t, g]`.
+- Maturity is a logistic function of age with declared age `ah` of 50% maturity
+  and slope parameter `gh`, as set in `data/cusk/config.toml`.
+- The objective combines catch, survey index and age composition terms and is
+  minimised by `Optim` L-BFGS on the phased schedule.
+
+**Assumptions**
+- Catch is fully reported; the declared `catch_type` governs whether the likelihood is on
+  catch in biomass or in numbers.
+- Natural mortality is an input, not fitted, unless the `M` random walk is active.
+- Survey indices are lognormally distributed about model-predicted abundance.
+- Age-composition observations are multinomial with adequate effective sample sizes.
+- The gear allocation declared in the control file partitions the total allowable catch.
+- Maturity is a smooth Logistic function of age with declared age `ah` of 50% maturity
+  and slope parameter `gh`, rather than a step function.
+
+**Strengths**
+- 30 age classes resolve cusk's slow somatic growth and long depletion, so a
+  multi-decade recovery horizon can be modelled.
+- Phased estimation handles the many parameters implied by a long age structure.
+- The gear-specific selectivity parameterisation distinguishes directed fisheries
+  from bycatch fisheries that take the same age classes.
+
+**Weaknesses**
+- Long-lived species react slowly, so terminal-year estimates rest heavily on the
+  recruitment assumptions; recovery signals only appear decades later.
+- A wide age range magnifies sensitivity to the assumed natural mortality.
+- With many parameters and limited survey effort, the oldest ages are usually
+  weakly identified.
+- A 30-plus group collapses all older individuals, which can understate the oldest
+  age classes when they are strongly depleted.
+
+**Estimation.** As with silver hake, the same model can be estimated with MAP
+(`fit_map`), NUTS (`sample_posterior`) or variational inference (`fit_vi`) through
+`AssessmentTools.InferenceBridge`.
 """
 
 # ╔═╡ 10000001-0000-0000-0000-000000000002
@@ -54,7 +100,7 @@ end
 md"""
 ## 1. Data Ingestion & Model Construction
 
-Load the raw assessment files (`Cusk.dat`, `Cusk.ctl`, and `Cusk.par`) from `examples/Cusk/`.
+Load the raw assessment files (`data.dat`, `control.ctl`, `parameters.par`) from `data/cusk/`.
 """
 
 # ╔═╡ 10000001-0000-0000-0000-000000000004

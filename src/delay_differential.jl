@@ -27,31 +27,60 @@ struct DdeModelConfig
 end
 
 """
-    default_snowcrab_dde_config() -> DdeModelConfig
+    load_dde_config(path::AbstractString) -> DdeModelConfig
 
-Construct standard parameters for the 6-stage continuous delay differential snow crab model:
-- Stage 1: Immature / sub-legal instar 9 (M0)
-- Stage 2: Instar 10 (M1)
-- Stage 3: Instar 11 (M2)
-- Stage 4: Instar 12 (commercial recruit, M3)
-- Stage 5: Commercial legal males (M4)
-- Stage 6: Mature females (f_mat)
+Read a DDE configuration from a TOML file. Every field of [`DdeModelConfig`](@ref)
+is required, and the file is the single place where these parameters are stated; no
+value is compiled into the source.
+
+Expected keys, under `[dde]`:
+
+| key | meaning |
+|:---|:---|
+| `num_stages` | number of biological stages |
+| `lags` | constant maturation delays in years |
+| `k_carrying_capacity` | per-stage asymptotic abundance bounds ``K_s`` |
+| `natural_mortality` | per-stage baseline mortality ``d_s`` |
+| `density_mortality` | per-stage density-dependent mortality ``d_{2,s}`` |
+| `transition_rates` | per-stage moult transition rates ``v_s`` |
+| `reproduction_weights_m` | male recruitment coefficients ``b_5`` |
+| `reproduction_weights_f` | female recruitment coefficients ``b_6`` |
+
+Stage order is terminal (stage 1, commercial legal males) to youngest (stage 5, instar 9),
+with mature females as stage 6; see [`DdeModelConfig`](@ref).
 """
-function default_snowcrab_dde_config()
-    return DdeModelConfig(
-        6,
-        [7.0, 8.0, 9.0],
-        [50.0, 45.0, 35.0, 25.0, 20.0, 15.0],
-        [0.15, 0.11, 0.14, 0.17, 0.16, 0.19],
-        [0.40, 0.40, 0.40, 0.40, 0.40, 0.40],
-        [0.65, 0.68, 0.61, 0.79],
-        [0.33, 0.34, 0.33],
-        [0.33, 0.34, 0.33]
-    )
+function load_dde_config(path::AbstractString)
+    cfg = Config.parse_file(path)
+    d = Config.require_section(cfg, "dde", path)
+    where = "$path section [dde]"
+    n = Config.load_int(d, "num_stages", where)
+    n >= 2 || error("'num_stages' in $where must be at least 2, got $n.")
+
+    k = Config.load_reals(d, "k_carrying_capacity", where)
+    dmort = Config.load_reals(d, "natural_mortality", where)
+    ddens = Config.load_reals(d, "density_mortality", where)
+    lags = Config.load_reals(d, "lags", where)
+    v = Config.load_reals(d, "transition_rates", where)
+    b5 = Config.load_reals(d, "reproduction_weights_m", where)
+    b6 = Config.load_reals(d, "reproduction_weights_f", where)
+
+    for (nm, s) in (("k_carrying_capacity", k), ("natural_mortality", dmort),
+                    ("density_mortality", ddens))
+        length(s) == n ||
+            error("'$nm' in $where must have $n entries (one per stage), got $(length(s)).")
+    end
+    for x in k
+        x > 0 || error("'k_carrying_capacity' in $where must be strictly positive (got $x).")
+    end
+    for x in union(dmort, ddens)
+        x >= 0 || error("Mortality values in $where must be non-negative (got $x).")
+    end
+
+    return DdeModelConfig(n, lags, k, dmort, ddens, v, b5, b6)
 end
 
 """
-    dde_derivatives(u, u_lag_1, u_lag_mat, p::DdeModelConfig, habitat_scalar = ones(6)) -> Vector{Float64}
+    dde_derivatives(u, u_lag_1, u_lag_mat, p::DdeModelConfig, habitat_scalar = ones(p.num_stages)) -> Vector{Float64}
 
 Compute instantaneous rates of change ``\\frac{du_s}{dt}`` for all stages:
 
@@ -65,7 +94,28 @@ Compute instantaneous rates of change ``\\frac{du_s}{dt}`` for all stages:
 \\frac{du_6}{dt} &= b_6^T u_{\\text{mat}}(t-\\tau) - d_{r,6}
 \\end{aligned}
 ```
-where ``d_{r,s} = d_s u_s + d_{2,s} \\frac{u_s^2}{H_s(t)}``.
+
+where ``d_{r,s} = d_s u_s + d_{2,s} \\frac{u_s^2}{H_s(t)}`` and ``u_{\\text{mat}}(t-\\tau)``
+is the female stage 6 history at the maturation lags ``\\tau \\in (7, 8, 9)``.
+
+# Stage indices
+
+The flux of growth runs from stage 5 to stage 1, so stage 1 is the terminal
+(oldest) male class, stage 5 receives recruitment, and stage 6 is the terminal
+female class:
+
+| index | stage (`M` label) | description                     |
+|:-----:|:------------------|:--------------------------------|
+| 1     | `M0`              | commercial legal males (≥ 95 mm) |
+| 2     | `M1`              | pre-recruit males (instar 12)   |
+| 3     | `M2`              | older immature males (instar 11) |
+| 4     | `M3`              | younger immature males (instar 10) |
+| 5     | `M4`              | newest male instars (instar 9)  |
+| 6     | `f_mat`           | mature females                  |
+
+Impulse removals applied by [`simulate_dde_system`](@ref) should target stage 1,
+the legal commercial class, and `extract_annual_recruitment` reports stage 2 by
+default, the newly recruitable class.
 """
 function dde_derivatives(u::AbstractVector{<:Real},
                          u_lag_1::AbstractVector{<:Real},
@@ -199,17 +249,27 @@ Bayesian continuous multi-stage delay differential equation (DDE) population mod
                                                   removals_amount::AbstractVector{<:Real} = Float64[],
                                                   prior_q0::Real = 0.0,
                                                   prior_q1::Real = 1.0,
-                                                  obs_cv::Real = 0.25)
+                                                  obs_cv::Real = 0.25,
+                                                  prior_k_scale_mu::Real = 1.0,
+                                                  prior_k_scale_sd::Real = 0.25,
+                                                  prior_rec_scale_mu::Real = 1.0,
+                                                  prior_rec_scale_sd::Real = 0.25,
+                                                  scale_lower::Real = 0.2,
+                                                  scale_upper::Real = 5.0,
+                                                  prior_obs_sd_sd::Real = 0.05,
+                                                  obs_sd_lower::Real = 0.05,
+                                                  obs_sd_upper::Real = 0.60)
     nt_survey, nstages = size(survey_data)
     nstages == cfg.num_stages || error("survey_data columns must match cfg.num_stages.")
 
     # Priors
     # Scaling factor for carrying capacity
-    k_scale ~ truncated(Normal(1.0, 0.25), 0.2, 5.0)
+    k_scale ~ truncated(Normal(prior_k_scale_mu, prior_k_scale_sd), scale_lower, scale_upper)
     # Scaling factor for maternal reproduction lag
-    rec_scale ~ truncated(Normal(1.0, 0.25), 0.2, 5.0)
+    rec_scale ~ truncated(Normal(prior_rec_scale_mu, prior_rec_scale_sd),
+                          scale_lower, scale_upper)
     # Observation error standard deviation
-    obs_sd ~ truncated(Normal(obs_cv, 0.05), 0.05, 0.60)
+    obs_sd ~ truncated(Normal(obs_cv, prior_obs_sd_sd), obs_sd_lower, obs_sd_upper)
 
     # Re-scale baseline config
     k_scaled = cfg.k_carrying_capacity .* k_scale

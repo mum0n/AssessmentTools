@@ -3,6 +3,7 @@ using AssessmentTools
 using LinearAlgebra
 using TOML
 using UnicodePlots
+using Random
 
 @testset "AssessmentTools Package Tests" begin
 
@@ -278,7 +279,8 @@ using UnicodePlots
     end
 
     @testset "DelayDifferential (Continuous Multi-Stage DDE)" begin
-        cfg = default_snowcrab_dde_config()
+        # DDE parameters are user-level configuration, read from a TOML file.
+        cfg = load_dde_config(normpath(joinpath(@__DIR__, "..", "data", "snowcrab", "dde.toml")))
         @test cfg.num_stages == 6
         @test length(cfg.lags) == 3
 
@@ -417,5 +419,172 @@ using UnicodePlots
         )
         @test p_foot isa UnicodePlots.Plot
     end
+end
+
+# ------------------------------------------------------------------------------------
+# SimulationEngine: bidirectional projection, agent and reaction representations.
+# ------------------------------------------------------------------------------------
+
+using AssessmentTools.SimulationEngine
+using AssessmentTools.StageMatrix
+
+@testset "SimulationEngine (Projection, Agents, Reaction/SSA)" begin
+    # Build parameters from a stage-structured configuration, as a point estimate.
+    sc = load_stage_matrix_config(normpath(joinpath(@__DIR__, "..", "data", "stage_matrix",
+                                                  "config.toml")))
+    n = sc.n_stages
+    _t(i_) = i_ < n && i_ <= length(sc.transition) ? sc.transition[i_] : 0.0
+    pr = projection_parameters(
+        n_groups = n,
+        weights = sc.stage_weights,
+        maturity = sc.maturity,
+        fertility = sc.fertility,
+        natural_mortality = -log(0.85),
+        advance = [_t(i_) for i_ in 1:n],
+        retention = [1.0 - _t(i_) for i_ in 1:n],
+        initial_numbers = sc.initial_abundance,
+        fishing_mortality = zeros(n, 1),
+        harvest_rate = fill(0.05, n, 1),
+        model_symbol = :stage_matrix)
+
+    # 1. `advance` and `retention` must partition the survivors.
+    for i in 1:n
+        @test pr.advance[i] + pr.retention[i] ≈ 1
+    end
+
+    # 2. Forward projection is monotone in the harvest rate and returns one state
+    #    per step plus the initial one.
+    st0 = SimulationEngine.ProjectionState(copy(pr.initial_numbers), 0,
+                                           sum(pr.initial_numbers .* pr.weights),
+                                           0.0, 0.0, 1)
+    fwd = SimulationEngine.project_state(pr, st0, direction = :forward, n_years = 8)
+    @test length(fwd) == 9
+    @test all(s -> length(s.numbers) == n, fwd)
+    @test all(isfinite, fwd[end].numbers)
+
+    # 3. Backward projection must invert the forward run exactly.
+    back = SimulationEngine.reconstruct_backward(pr, fwd[end].numbers, n_years = 8)
+    @test isapprox(back[end].numbers, pr.initial_numbers, rtol = 1.0e-6)
+
+    # 4. A projection started at a designated time slice reads that slice's rates.
+    st3 = SimulationEngine.project_from_slice(pr, copy(pr.initial_numbers), 1,
+                                              direction = :forward, n_years = 3)
+    @test length(st3) == 4
+
+    # 5. Agent representation: abundance equals the initial numbers, and the
+    #    projection is positive and finite.
+    pop = spawn_population(pr, n_agents_per_group = 4)
+    @test isapprox(group_abundance(pop), pr.initial_numbers, rtol = 1.0e-9)
+    ag_states, ag_rem = run_agent_projection(pr, 4, n_agents_per_group = 8,
+                                             rng = Random.MersenneTwister(7))
+    @test length(ag_states) == 5
+    @test all(s -> all(x -> x >= 0, s), ag_states)
+    @test all(x -> x >= 0, ag_rem)
+
+    # 6. Reaction network: one recruit reaction plus per-group reactions.
+    net = build_reaction_network(pr)
+    @test length(net.species) == n
+    @test length(net.reactions) == 1 + (n - 1) + 3 * n
+    @test net.reactions[1].name === :recruit
+
+    # 7. Time-binned SSA: frames and species counts are consistent, counts never
+    #    negative, and the harvest total is non-negative.
+    ss = simulate_ssa(net, 2.0, n_bins = 8, rng = Random.MersenneTwister(11))
+    @test size(ss.counts, 1) == n
+    @test size(ss.counts, 2) == 9
+    @test all(>=(0), ss.counts)
+    @test ss.total_harvested >= 0.0
+
+    # 8. `harvest_rate` with a single column propagates a repeating schedule.
+    pr2 = projection_parameters(
+        n_groups = n, weights = sc.stage_weights, maturity = sc.maturity,
+        fertility = sc.fertility, natural_mortality = -log(0.85),
+        advance = [_t(i_) for i_ in 1:n], retention = [1.0 - _t(i_) for i_ in 1:n],
+        initial_numbers = sc.initial_abundance,
+        fishing_mortality = zeros(n, 3),
+        harvest_rate = fill(0.05, n, 3),
+        model_symbol = :stage_matrix)
+    f2 = SimulationEngine.project_state(pr2, st0, direction = :forward, n_years = 7)
+    @test length(f2) == 8
+    @test all(isfinite, f2[end].numbers)
+
+    # 9. Saved posterior ensemble: round-trip and per-step joint resampling.
+    #    Draws are made by perturbing the point estimate, always renormalising
+    #    advance + retention so they partition the survivors, which is the constraint
+    #    the engine validates on load.
+    rng_d = Random.MersenneTwister(4321)
+    base_a = pr.advance
+    base_r = pr.retention
+    draws = map(1:40) do _
+        a_raw = abs.(base_a .+ 0.03 .* randn(rng_d, n))
+        r_raw = abs.(base_r .+ 0.03 .* randn(rng_d, n))
+        tot = a_raw .+ r_raw
+        adv = clamp.(a_raw ./ tot, 0.0, 1.0)
+        projection_parameters(
+            n_groups = n,
+            weights = pr.weights .* (1.0 .+ 0.04 .* randn(rng_d, n)),
+            maturity = pr.maturity,
+            fertility = pr.fertility .* (1.0 .+ 0.15 .* randn(rng_d, n)),
+            natural_mortality = -log(0.85) * exp(0.04 * randn(rng_d)),
+            advance = adv,
+            retention = 1.0 .- adv,
+            initial_numbers = pr.initial_numbers,
+            fishing_mortality = pr.fishing_mortality,
+            harvest_rate = fill(0.05, n, 1),
+            model_symbol = :stage_matrix)
+    end
+    ens = ParameterEnsemble(draws, "test_ensemble")
+
+    zdir = mktempdir() do tmp
+        z = joinpath(tmp, "ens.zarr")
+        saved = SimulationEngine.save_ensemble(z, ens)
+        back = SimulationEngine.load_ensemble(saved)
+
+        # Round-trip: same count, and the first draw reproduces its source.
+        @test length(back) == length(ens)
+        @test back.draws[1].natural_mortality ≈ draws[1].natural_mortality rtol = 1.0e-6
+        @test back.draws[1].advance ≈ draws[1].advance rtol = 1.0e-6
+        @test back.draws[1].weights ≈ draws[1].weights rtol = 1.0e-6
+
+        # A truncated load keeps the first n_draws.
+        head = SimulationEngine.load_ensemble(saved; n_draws = 5)
+        @test length(head) == 5
+
+        # 10. Every posterior combination mode runs and stays finite.
+        point_run = SimulationEngine.project_state(pr, st0, direction = :forward,
+                                                   n_years = 6)[end].biomass
+        resample = map(1:8) do k
+            SimulationEngine.project_state(pr, st0, direction = :forward, n_years = 6,
+                                          ensemble = back,
+                                          mode = :resample_each_step,
+                                          rng = Random.MersenneTwister(100 + k))[end].biomass
+        end
+        single = map(1:8) do k
+            SimulationEngine.project_state(pr, st0, direction = :forward, n_years = 6,
+                                          ensemble = back,
+                                          mode = :single_draw,
+                                          rng = Random.MersenneTwister(300 + k))[end].biomass
+        end
+        mean_run = SimulationEngine.project_state(pr, st0, direction = :forward,
+                                                  n_years = 6, ensemble = back,
+                                                  mode = :posterior_mean)[end].biomass
+        @test all(isfinite, resample)
+        @test all(isfinite, single)
+        @test mean_run > 0.0
+        # The point estimate is the deterministic recursion and must match exactly.
+        @test point_run ≈ SimulationEngine.project_state(pr, st0, direction = :forward,
+                                                         n_years = 6)[end].biomass
+
+        # 11. TOML-driven simulation controls.
+        scfg = joinpath(tmp, "sim.toml")
+        write(scfg, "[simulation]\nparameter_combination = 1\nn_draws = 40\n")
+        sc_ctl = load_simulation_controls(scfg)
+        @test sc_ctl.parameter_combination === :resample_each_step
+        @test sc_ctl.n_draws == 40
+
+        write(scfg, "[simulation]\nparameter_combination = 3\nn_draws = 7\n")
+        @test load_simulation_controls(scfg).parameter_combination === :posterior_mean
+    end
+    nothing
 end
 

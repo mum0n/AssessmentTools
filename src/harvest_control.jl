@@ -181,38 +181,104 @@ end
     bayesian_mse_feedback(observed_biomass, catches, hcr;
                           prior_r = (0.35, 0.15),
                           prior_k = (100.0, 30.0),
-                          obs_cv = 0.15)
+                          obs_cv = 0.15,
+                          prior_proc_sd = 0.08,
+                          prior_proc_sd_sd = 0.04,
+                          prior_obs_sd_sd = 0.05,
+                          k_lower = 10.0,
+                          k_upper_factor = 5.0,
+                          r_lower = 0.05,
+                          r_upper = 1.20,
+                          proc_sd_lower = 0.01,
+                          proc_sd_upper = 0.30,
+                          obs_sd_lower = 0.02,
+                          obs_sd_upper = 0.50,
+                          prior_b0_sd = 15.0,
+                          b0_lower = 5.0,
+                          proc_sd_scale = 1.0,
+                          b_floor = 1.0e-4)
 
 Bayesian state-space feedback model for Management Strategy Evaluation in `Turing.jl`:
 - Formulates joint posterior over latent operating model states given HCR catches and biomass observations.
 - Estimates biological productivity ``r, K`` and process/observation errors.
+- Evaluates two likelihoods: the assessment biomass index
+  ``\\hat{B}_t \\sim \\mathrm{LogNormal}(\\log B_t, \\sigma_o)``, and implementation error on the
+  catch against the target the harvest control rule prescribes applied to the latent stock,
+  ``C_t \\sim \\mathrm{LogNormal}(\\log(f_t B_t), \\sigma_i)``.
+
+Every prior mean, standard deviation and bound is a named keyword argument, so the prior
+specification is user-level rather than compiled into the model body.
+
+# Arguments
+- `observed_biomass`: assessment or survey biomass estimates.
+- `catches`: realized removals.
+- `hcr::HockeyStickHCR`: the harvest control rule in force, which sets the fishing rate for
+  each year from the assessment biomass.
 """
 @model function bayesian_mse_feedback(observed_biomass::AbstractVector{<:Real},
                                       catches::AbstractVector{<:Real},
                                       hcr::HockeyStickHCR;
                                       prior_r::Tuple{Real, Real} = (0.35, 0.15),
                                       prior_k::Tuple{Real, Real} = (100.0, 30.0),
-                                      obs_cv::Real = 0.15)
+                                      obs_cv::Real = 0.15,
+                                      prior_proc_sd::Real = 0.08,
+                                      prior_proc_sd_sd::Real = 0.04,
+                                      prior_obs_sd_sd::Real = 0.05,
+                                      k_lower::Real = 10.0,
+                                      k_upper_factor::Real = 5.0,
+                                      r_lower::Real = 0.05,
+                                      r_upper::Real = 1.20,
+                                      proc_sd_lower::Real = 0.01,
+                                      proc_sd_upper::Real = 0.30,
+                                      obs_sd_lower::Real = 0.02,
+                                      obs_sd_upper::Real = 0.50,
+                                      prior_b0_sd::Real = 15.0,
+                                      b0_lower::Real = 5.0,
+                                      proc_sd_scale::Real = 1.0,
+                                      b_floor::Real = 1.0e-4,
+                                      prior_impl_sd::Real = 0.10,
+                                      prior_impl_sd_sd::Real = 0.04,
+                                      impl_sd_lower::Real = 0.02,
+                                      impl_sd_upper::Real = 0.50)
     nt = length(observed_biomass)
     length(catches) == nt || error("observed_biomass and catches lengths must match.")
 
-    k ~ truncated(Normal(prior_k[1], prior_k[2]), 10.0, 5.0 * prior_k[1])
-    r ~ truncated(Normal(prior_r[1], prior_r[2]), 0.05, 1.20)
-    proc_sd ~ truncated(Normal(0.08, 0.04), 0.01, 0.30)
-    obs_sd ~ truncated(Normal(obs_cv, 0.05), 0.02, 0.50)
+    k ~ truncated(Normal(prior_k[1], prior_k[2]), k_lower, k_upper_factor * prior_k[1])
+    r ~ truncated(Normal(prior_r[1], prior_r[2]), r_lower, r_upper)
+    proc_sd ~ truncated(Normal(prior_proc_sd, prior_proc_sd_sd),
+                        proc_sd_lower, proc_sd_upper)
+    obs_sd ~ truncated(Normal(obs_cv, prior_obs_sd_sd), obs_sd_lower, obs_sd_upper)
+    # Implementation error: the deviation between the catch the HCR prescribes and
+    # the catch actually removed. It is a separate process from observation error on
+    # biomass, so it gets its own parameter.
+    impl_sd ~ truncated(Normal(prior_impl_sd, prior_impl_sd_sd),
+                        impl_sd_lower, impl_sd_upper)
 
     b = Vector{Float64}(undef, nt)
-    b[1] ~ truncated(Normal(observed_biomass[1], 15.0), 5.0, k)
+    b[1] ~ truncated(Normal(observed_biomass[1], prior_b0_sd), b0_lower, k)
 
     for t in 1:(nt - 1)
-        esc = max(1e-4, b[t] - catches[t])
+        esc = max(b_floor, b[t] - catches[t])
         mu_next = esc + r * esc * (1.0 - esc / k)
-        b[t + 1] ~ truncated(Normal(mu_next, proc_sd * b[t]), 1e-4, 2.0 * k)
+        b[t + 1] ~ truncated(Normal(mu_next, proc_sd_scale * proc_sd * b[t]),
+                             b_floor, 2.0 * k)
     end
 
+    # Assessment biomass index: lognormal observation error on the latent stock.
     for t in 1:nt
-        observed_biomass[t] ~ LogNormal(log(max(1e-4, b[t])), obs_sd)
+        observed_biomass[t] ~ LogNormal(log(max(b_floor, b[t])), obs_sd)
     end
 
-    return (biomass = b, r = r, k = k, proc_sd = proc_sd, obs_sd = obs_sd)
+    # Management performance: realized catch against the catch the HCR prescribes for
+    # the biomass seen by the assessment. The HCR acts on the assessment biomass in
+    # closed-loop simulation, so it is evaluated on `observed_biomass[t]`, and the
+    # prescribed rate is applied to the latent stock to obtain a target catch.
+    for t in 1:nt
+        f_hcr = eval_hcr(hcr, observed_biomass[t])
+        target_catch = max(b_floor, f_hcr * b[t])
+        catches[t] ~ LogNormal(log(target_catch), impl_sd)
+    end
+
+    return (biomass = b, r = r, k = k, proc_sd = proc_sd, obs_sd = obs_sd,
+            impl_sd = impl_sd)
 end

@@ -2,6 +2,8 @@
 # AssessmentTools I/O: Native TOML and CSV dataset loader and report writers.
 # ------------------------------------------------------------------------------------
 
+using ..Config
+
 """
     ProjectionControl(tac, pf_cntrl)
 
@@ -140,6 +142,76 @@ function MiscControls(c::AbstractVector{<:Real})
 end
 
 """
+    EstimationControls
+
+Solver settings for phased estimation, read from the `[estimation]` section of
+`config.toml`. Exposed at the user level so run length and convergence tolerance
+are not compiled into the optimiser call.
+
+# Fields
+- `max_iterations::Int`: maximum iterations per phase.
+- `g_abstol::Float64`: absolute-gradient convergence tolerance.
+"""
+struct EstimationControls
+    max_iterations::Int
+    g_abstol::Float64
+end
+
+"""
+    PenaltyControls
+
+Penalty weights used in the objective function, read from the `[penalties]`
+section of `config.toml`. Every value here was previously a literal in
+`src/objective.jl`.
+
+# Fields
+- `rec_dev_sd::Float64`: prior standard deviation for recruitment deviations in the
+  final phase.
+- `rec_dev_penalty_weight::Float64`: weight of the early-phase quadratic penalty on
+  recruitment deviations and initial recruitment deviations.
+- `sel_zero_mean_weight::Float64`: weight of the zero-mean penalty on selectivity
+  parameter rows and columns.
+- `m_dev_node_weight::Float64`: weight of the quadratic penalty on natural-mortality
+  spline nodes.
+- `agecomp_process_error::Float64`: HCAM process-error adjustment used to convert
+  raw age-composition counts into an effective sample size.
+"""
+struct PenaltyControls
+    rec_dev_sd::Float64
+    rec_dev_penalty_weight::Float64
+    sel_zero_mean_weight::Float64
+    m_dev_node_weight::Float64
+    agecomp_process_error::Float64
+end
+
+"""
+    DecisionControls
+
+Decision-table thresholds used by [`project_population`](@ref), read from the
+`[decision]` section of `config.toml`. Every threshold was previously a literal in
+`src/simulation_projection.jl`.
+
+# Fields
+- `sb_bo_thresholds::Vector{Float64}`: spawning-biomass thresholds as fractions of
+  `B₀`; a probability is reported for each.
+- `sb_bmsy_thresholds::Vector{Float64}`: spawning-biomass thresholds as fractions of
+  `B_MSY`.
+- `u_umsy_thresholds::Vector{Float64}`: exploitation-rate thresholds as fractions of
+  `U_MSY`.
+- `age_floor::Int`: minimum age counted in the age-`3+` exploitation rate.
+- `age3_exploitation_limit::Float64`: exploitation-rate limit on age-3+ fish.
+- `epsilon::Float64`: small value guarding division by a zero denominator.
+"""
+struct DecisionControls
+    sb_bo_thresholds::Vector{Float64}
+    sb_bmsy_thresholds::Vector{Float64}
+    u_umsy_thresholds::Vector{Float64}
+    age_floor::Int
+    age3_exploitation_limit::Float64
+    epsilon::Float64
+end
+
+"""
     StockControl
 
 Control parameters and priors:
@@ -153,6 +225,9 @@ Control parameters and priors:
 - `sel_2nd_diff_wt`, `sel_dome_wt`: Smoothing penalty weights for spline selectivity.
 - `q_prior`, `q_mu`, `q_sd`: Survey catchability prior distributions.
 - `misc`: [`MiscControls`](@ref) structure.
+- `estimation`: [`EstimationControls`](@ref) solver settings.
+- `penalties`: [`PenaltyControls`](@ref) penalty weights.
+- `decision`: [`DecisionControls`](@ref) decision-table thresholds.
 """
 struct StockControl
     theta_control::Matrix{Float64}
@@ -168,6 +243,9 @@ struct StockControl
     q_mu::Vector{Float64}
     q_sd::Vector{Float64}
     misc::MiscControls
+    estimation::EstimationControls
+    penalties::PenaltyControls
+    decision::DecisionControls
 end
 
 # ------------------------------------------------------------------------------------
@@ -200,7 +278,6 @@ function load_dataset(dir::AbstractString)
     ngear = Int(dim["ngear"])
     allocation = Float64.(dim["allocation"])
     catch_type = haskey(dim, "catch_type") ? Int.(dim["catch_type"]) : ones(Int, ngear)
-
     # Catches from catches.csv
     catch_file = joinpath(dir, "catches.csv")
     isfile(catch_file) || error("Catches file not found: $catch_file")
@@ -335,7 +412,10 @@ function load_dataset(dir::AbstractString)
         Int.(qp_dict["q_prior"]),
         Float64.(qp_dict["q_mu"]),
         Float64.(qp_dict["q_sd"]),
-        misc
+        misc,
+        _load_estimation(cfg, cfg_file),
+        _load_penalties(cfg, cfg_file),
+        _load_decision(cfg, cfg_file)
     )
 
     # Projection control
@@ -347,6 +427,71 @@ function load_dataset(dir::AbstractString)
     end
 
     return data, ctl, pfc
+end
+
+"""
+    _load_estimation(cfg, path) -> EstimationControls
+
+Read `[estimation]` from a configuration table. Every key is required, so the
+optimiser settings are explicit in the file rather than defaulted in code.
+"""
+function _load_estimation(cfg::AbstractDict, path::AbstractString)
+    d = Config.require_section(cfg, "estimation", path)
+    where = "$path section [estimation]"
+    n = Config.load_int(d, "max_iterations", where)
+    n >= 1 || error("'max_iterations' in $where must be at least 1, got $n.")
+    g = Config.positive(d, "g_abstol", where)
+    return EstimationControls(n, g)
+end
+
+"""
+    _load_penalties(cfg, path) -> PenaltyControls
+
+Read `[penalties]` from a configuration table. Every key is required.
+"""
+function _load_penalties(cfg::AbstractDict, path::AbstractString)
+    d = Config.require_section(cfg, "penalties", path)
+    where = "$path section [penalties]"
+    return PenaltyControls(
+        Config.positive(d, "rec_dev_sd", where),
+        Config.non_negative(d, "rec_dev_penalty_weight", where),
+        Config.non_negative(d, "sel_zero_mean_weight", where),
+        Config.non_negative(d, "m_dev_node_weight", where),
+        Config.non_negative(d, "agecomp_process_error", where)
+    )
+end
+
+"""
+    _load_decision(cfg, path) -> DecisionControls
+
+Read `[decision]` from a configuration table. Every key is required, so each
+decision-table threshold is stated by the user rather than fixed in code.
+"""
+function _load_decision(cfg::AbstractDict, path::AbstractString)
+    d = Config.require_section(cfg, "decision", path)
+    where = "$path section [decision]"
+    bo_t = Config.load_reals(d, "sb_bo_thresholds", where)
+    bmsy_t = Config.load_reals(d, "sb_bmsy_thresholds", where)
+    u_t = Config.load_reals(d, "u_umsy_thresholds", where)
+    # `DecisionMetrics` has a fixed number of threshold fields, so the configured
+    # vectors must match them. An explicit message beats an index error later.
+    length(bo_t) == 2 ||
+        error("'sb_bo_thresholds' in $where must have 2 entries (one per DecisionMetrics field), got $(length(bo_t)).")
+    length(bmsy_t) == 2 ||
+        error("'sb_bmsy_thresholds' in $where must have 2 entries, got $(length(bmsy_t)).")
+    length(u_t) == 3 ||
+        error("'u_umsy_thresholds' in $where must have 3 entries, got $(length(u_t)).")
+    for (nm, v) in (("sb_bo_thresholds", bo_t), ("sb_bmsy_thresholds", bmsy_t),
+                     ("u_umsy_thresholds", u_t))
+        for x in v
+            0 < x || error("Threshold $x in '$nm' ($where) must be positive.")
+        end
+    end
+    age_floor = Config.load_int(d, "age_floor", where)
+    age_floor >= 1 || error("'age_floor' in $where must be at least 1, got $age_floor.")
+    u3 = Config.positive(d, "age3_exploitation_limit", where)
+    eps = Config.positive(d, "epsilon", where)
+    return DecisionControls(bo_t, bmsy_t, u_t, age_floor, u3, eps)
 end
 
 """

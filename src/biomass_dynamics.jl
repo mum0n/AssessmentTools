@@ -48,18 +48,35 @@ function logistic_step(b::Real, r::Real, k::Real, c::Real)
 end
 
 """
-    logistic_map_step(m::Real, r::Real, k::Real, c::Real) -> Real
+    logistic_step_frac(m::Real, r::Real, k::Real, c::Real) -> Real
 
-Normalized Euler / map formulation on the unit scale ``m_t = B_t / K``:
+Normalised (depletion scale ``m = B / K``) one-step transition of the discrete
+logistic surplus production map, clamped below at zero:
 
 ```math
-m_{t+1} = r m_t (1 - m_t) - \\frac{C_t}{K}
+m_{t+1} = \\max\\left(0,\\; m_t + r\\,m_t\\left(1 - m_t\\right) - \\frac{C_t}{K}\\right)
+```
+
+Dividing [`logistic_step`](@ref) by ``K`` yields exactly this map, so both
+formulations are numerically identical. This is the single definition used by the
+deterministic simulators and by the Turing state-space model, which keeps the two
+implementations consistent by construction.
+"""
+logistic_step_frac(m::Real, r::Real, k::Real, c::Real) = max(0.0, m + r * m * (1.0 - m) - c / k)
+
+"""
+    logistic_map_step(m::Real, r::Real, k::Real, c::Real) -> Real
+
+Normalised map formulation on the unit depletion scale ``m_t = B_t / K``:
+
+```math
+m_{t+1} = \\max\\left(0,\\; m_t + r\\,m_t\\left(1 - m_t\\right) - \\frac{C_t}{K}\\right)
 ```
 """
 function logistic_map_step(m::Real, r::Real, k::Real, c::Real)
     k > 0 || error("logistic_map_step: K must be strictly positive.")
-    next_m = r * m * (1.0 - m) - c / k
-    return next_m > 0.0 ? next_m : 0.0
+    next_m = logistic_step_frac(m, r, k, c)
+    return next_m
 end
 
 """
@@ -175,6 +192,13 @@ I_t &\\sim \\mathrm{LogNormal}\\left(\\log(q K m_t), \\sigma_o\\right)
 - `prior_k`: Mean and standard deviation for carrying capacity ``K``.
 - `prior_q`: Mean and standard deviation for survey catchability scalar ``q``.
 - `prior_m0`: Prior for initial relative depletion ``m_0 = B_1 / K``.
+- `prior_proc_sd`, `prior_proc_sd_sd`: prior mean and standard deviation for the process
+  error standard deviation; `prior_obs_sd`, `prior_obs_sd_sd` likewise for observation error.
+- `proc_sd_range`, `obs_sd_range`: admissible bounds for those standard deviations.
+- `k_lower`, `k_upper_factor`: admissible bounds for ``K``, as `prior_k[1] * k_upper_factor`.
+- `r_lower`, `r_upper`, `q_lower`, `q_upper`, `m_lower`, `m_upper`: admissible bounds for
+  ``r``, ``q`` and relative depletion.
+- `b_floor`: small value guarding logarithms and divisions against zero.
 """
 @model function bayesian_logistic_discrete(removals::AbstractVector{<:Real},
                                            survey_obs::AbstractVector;
@@ -183,47 +207,61 @@ I_t &\\sim \\mathrm{LogNormal}\\left(\\log(q K m_t), \\sigma_o\\right)
                                            prior_k::Tuple{Real, Real} = (100.0, 30.0),
                                            prior_q::Tuple{Real, Real} = (1.0, 0.25),
                                            prior_m0::Tuple{Real, Real} = (0.8, 0.2),
+                                           prior_proc_sd::Real = 0.10,
+                                           prior_proc_sd_sd::Real = 0.05,
+                                           prior_obs_sd::Real = 0.15,
+                                           prior_obs_sd_sd::Real = 0.05,
                                            proc_sd_range::Tuple{Real, Real} = (0.01, 0.40),
-                                           obs_sd_range::Tuple{Real, Real} = (0.02, 0.50))
+                                           obs_sd_range::Tuple{Real, Real} = (0.02, 0.50),
+                                           k_lower::Real = 1.0,
+                                           k_upper_factor::Real = 10.0,
+                                           r_lower::Real = 0.01,
+                                           r_upper::Real = 1.5,
+                                           q_lower::Real = 0.01,
+                                           q_upper::Real = 10.0,
+                                           m_lower::Real = 0.01,
+                                           m_upper::Real = 1.0,
+                                           b_floor::Real = 1.0e-4)
     nt = length(removals)
     length(survey_obs) == nt || error("removals and survey_obs lengths must match.")
 
     # Priors
-    k ~ truncated(Normal(prior_k[1], prior_k[2]), 1.0, 10.0 * prior_k[1])
-    r ~ truncated(Normal(prior_r[1], prior_r[2]), 0.01, 1.5)
-    q ~ truncated(Normal(prior_q[1], prior_q[2]), 0.01, 10.0)
-    proc_sd ~ truncated(Normal(0.10, 0.05), proc_sd_range[1], proc_sd_range[2])
-    obs_sd ~ truncated(Normal(0.15, 0.05), obs_sd_range[1], obs_sd_range[2])
+    k ~ truncated(Normal(prior_k[1], prior_k[2]), k_lower, k_upper_factor * prior_k[1])
+    r ~ truncated(Normal(prior_r[1], prior_r[2]), r_lower, r_upper)
+    q ~ truncated(Normal(prior_q[1], prior_q[2]), q_lower, q_upper)
+    proc_sd ~ truncated(Normal(prior_proc_sd, prior_proc_sd_sd),
+                        proc_sd_range[1], proc_sd_range[2])
+    obs_sd ~ truncated(Normal(prior_obs_sd, prior_obs_sd_sd),
+                       obs_sd_range[1], obs_sd_range[2])
 
     m = Vector{Float64}(undef, nt)
-    m[1] ~ truncated(Normal(prior_m0[1], prior_m0[2]), 0.01, 1.0)
+    m[1] ~ truncated(Normal(prior_m0[1], prior_m0[2]), m_lower, m_upper)
 
     for i in 1:(nt - 1)
-        c_norm = removals[i] / k
-        m_curr = m[i]
-        mu_next = m_curr + r * m_curr * (1.0 - m_curr) - c_norm
-        mu_safe = max(0.01, min(0.99, mu_next))
-        m[i + 1] ~ truncated(Normal(mu_safe, proc_sd), 0.01, 1.0)
+        # State transition: `logistic_step_frac`, the single definition of the
+        # surplus production map, clamped to the admissible depletion range.
+        mu_safe = max(m_lower, min(m_upper, logistic_step_frac(m[i], r, k, removals[i])))
+        m[i + 1] ~ truncated(Normal(mu_safe, proc_sd), m_lower, m_upper)
     end
 
     # Observation likelihood with seasonal survey timing
     for i in 1:nt
         s_obs = survey_obs[i]
         if !ismissing(s_obs) && isfinite(s_obs) && s_obs > 0.0
-            # Calculate expected exploitable biomass according to survey timing
+            # Expected exploitable biomass according to survey timing
             b_exp = if survey_transition == 0
-                max(1e-4, k * m[i] - removals[i])
+                max(b_floor, k * m[i] - removals[i])
             else
                 if i < survey_transition
                     k * m[i]
                 elseif i == survey_transition
                     c_avg = i > 1 ? 0.5 * (removals[i - 1] + removals[i]) : removals[i]
-                    max(1e-4, k * m[i] - c_avg)
+                    max(b_floor, k * m[i] - c_avg)
                 else
-                    max(1e-4, k * m[i] - removals[i])
+                    max(b_floor, k * m[i] - removals[i])
                 end
             end
-            s_pred = max(1e-4, q * b_exp)
+            s_pred = max(b_floor, q * b_exp)
             s_obs ~ LogNormal(log(s_pred), obs_sd)
         end
     end

@@ -157,6 +157,28 @@ Bayesian state-space formulation of the statistical catch-at-age forward model:
         end
     end
 
+    # Age-composition likelihood
+    #
+    # `Ahat` holds the predicted proportions for each age-composition dataset. The
+    # likelihood is the same one the point-estimate objective minimises: multinomial
+    # with pooled bins, or multivariate-logistic, selected by `misc.agecomp_like`.
+    # The shared routines are called so the Bayesian and point estimates use one
+    # formulation; the negative log-likelihood they return is added to the posterior
+    # with a sign change because Turing accumulates log posterior.
+    for (k, ac) in enumerate(model.data.agecomps)
+        rows = model.agecomp_rows[k]
+        isempty(rows) && continue
+        O = ac.obs[rows, :]
+        P = Ahat[k]
+        nll = if misc.agecomp_like == 1
+            dmvlogistic(O, P, misc.min_prop)[1]
+        else
+            dmultinom_pooled(O, P, misc.min_prop;
+                             proc_err = model.control.penalties.agecomp_process_error)[1]
+        end
+        @addlogprob!(-nll)
+    end
+
     # Stock-recruitment deviation likelihood
     tau = lead.tau
     sr_deltas = sr.delta

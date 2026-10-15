@@ -5,40 +5,62 @@
 """
     DecisionMetrics
 
-Collection of decision table metrics computed across proposed TAC levels:
-- `P(SB_{T+1} < SB_T)`: Probability of spawning biomass decline
-- `P(SB_{T+1} < 0.25 B_0)`: Probability of severe depletion (< 25% B0)
-- `P(SB_{T+1} < 0.75 B_0)`: Probability of depletion (< 75% B0)
-- `P(SB_{T+1} < 0.40 B_MSY)`: Probability below limit reference point (40% Bmsy)
-- `P(SB_{T+1} < 0.80 B_MSY)`: Probability below target reference point (80% Bmsy)
-- `P(U_{T+1} > U_MSY)`: Probability of overfishing relative to Umsy
-- `P(U_{T+1} > 0.5 U_MSY)`
-- `P(U_{T+1} > 0.67 U_MSY)`
-- `P(U_{3+} > 0.20)`: Exploitation rate on age-3+ fish exceeding 20%
-- `P(dSB5 < 0)`: Average 5-year rate of decline in spawning biomass
+Monte Carlo performance statistics for one Total Allowable Catch (`tac`) option,
+evaluated by [`project_population`](@ref). All `p_*` fields are probabilities in
+`[0, 1]` estimated over `n_sim` projection realisations.
+
+Threshold values are not part of this struct: they come from
+[`DecisionControls`](@ref). The numbered suffix on each field identifies the
+position of the corresponding threshold in the configured vector, so
+`p_sb_lt_bo_1` uses `sb_bo_thresholds[1]`.
+
+# Fields
+- `tac::Float64`: evaluated total allowable catch
+- `p_sb_decline::Float64`: `P(SB_{T+1} < SB_T)`
+- `p_sb_lt_bo_1`, `p_sb_lt_bo_2`: `P(SB_{T+1} < f B₀)` for the configured fractions `f`
+- `p_sb_lt_bmsy_1`, `p_sb_lt_bmsy_2`: `P(SB_{T+1} < f B_MSY)`
+- `p_u_gt_umsy_1`, `p_u_gt_umsy_2`, `p_u_gt_umsy_3`: `P(U_{T+1} > f U_MSY)`
+- `p_u_age_gt_limit`: `P(U_{age_floor+, T+1} > age3_exploitation_limit)`
+- `dsb5_rate::Float64`: mean of `log(SB_{T+1}/SB_T)` over realisations; the average
+  rate of change in spawning biomass, not a probability
 """
 struct DecisionMetrics
     tac::Float64
     p_sb_decline::Float64
-    p_sb_lt_025bo::Float64
-    p_sb_lt_075bo::Float64
-    p_sb_lt_040bmsy::Float64
-    p_sb_lt_080bmsy::Float64
-    p_u_gt_umsy::Float64
-    p_u_gt_05umsy::Float64
-    p_u_gt_067umsy::Float64
-    p_u3_gt_020::Float64
+    p_sb_lt_bo_1::Float64
+    p_sb_lt_bo_2::Float64
+    p_sb_lt_bmsy_1::Float64
+    p_sb_lt_bmsy_2::Float64
+    p_u_gt_umsy_1::Float64
+    p_u_gt_umsy_2::Float64
+    p_u_gt_umsy_3::Float64
+    p_u_age_gt_limit::Float64
     dsb5_rate::Float64
 end
 
 """
-    project_population(model, x, tac; n_sim=1000, rng=Random.default_rng()) -> DecisionMetrics
+    project_population(model, x, tac; n_sim = 1000, rng = Random.default_rng()) -> DecisionMetrics
 
-Projects population dynamics forward under a constant Total Allowable Catch (`tac`)
-using terminal year selectivities and mean life-history schedules.
+Project one year forward under constant total allowable catch `tac` and estimate the
+decision-table probability metrics by Monte Carlo.
+
+The deterministic components — terminal selectivity, mean life-history schedules,
+the fishing mortality that yields `tac`, and the reference points — are held fixed.
+The stochastic component is the recruitment deviation of the projection year, drawn
+from the stock-recruitment process error ``\\epsilon \\sim \\mathrm{Normal}(0, \\tau)``
+with ``\\tau`` the process error standard deviation already estimated by the model:
+
+```math
+R_{T+1} = \\bar{R}\\, e^{\\epsilon},\\qquad \\epsilon \\sim N(0, \\tau)
+```
+
+Among the `3` or more ages that this affects, the resulting spawning biomass ``SB_{T+1}``
+is computed each realisation, and the `p_*` fields are the sample proportions of the
+corresponding events. `dsb5_rate` is the mean log change ``\\log(SB_{T+1}/SB_T)``.
 """
 function project_population(m::StockModel, x::AbstractVector{<:Real}, tac::Real;
                             n_sim::Integer = 1000, rng::AbstractRNG = Random.default_rng())
+    n_sim >= 1 || error("n_sim must be at least 1.")
     p = unpack(m.layout, x)
     ctx = PhaseContext(m.layout.max_phase, true)
     lead = leading_parameters(m, p.theta)
@@ -50,12 +72,9 @@ function project_population(m::StockModel, x::AbstractVector{<:Real}, tac::Real;
     ny = m.ny
     na = m.nages
     sf = m.control.misc.spawn_fraction
-    rec_type = m.control.misc.rec_type
     tau = lead.tau
     m_M = mort.m_bar
 
-    # Terminal state
-    N_nyr1 = copy(pop.N[ny + 1, :])
     SB_nyr = sum(pop.N[ny, :] .* exp.(-mort.Z[ny, :] .* sf) .* m.fec[ny, :])
     bo = ref.bo
     bmsy = ref.bmsy
@@ -69,54 +88,73 @@ function project_population(m::StockModel, x::AbstractVector{<:Real}, tac::Real;
         p_ct[k] = m.data.allocation[k] * tac
     end
 
-    # Solve future fishing mortality
-    p_ft = solve_baranov_f(p_ct, m_M, va_bar, N_nyr1, m.avg_wt)
+    # Mean fishing mortality that yields `tac`, solved on the projected age structure
+    p_ft = solve_baranov_f(p_ct, m_M, va_bar, pop.N[ny + 1, :], m.avg_wt)
     p_Z = fill(m_M, na)
     for k in 1:ngear(m)
         p_Z .+= p_ft[k] .* va_bar[k, :]
     end
 
-    # Future spawning biomass
-    p_sbt = sum(N_nyr1 .* exp.(-p_Z .* sf) .* m.avg_fec)
+    sb_anchor = sum(pop.N[ny + 1, :] .* exp.(-p_Z .* sf) .* m.avg_fec)
 
-    # Reference point ratios for projection metrics
-    r_sb1 = SB_nyr / p_sbt
-    r_sb2 = 0.25 * bo / p_sbt
-    r_sb3 = 0.75 * bo / p_sbt
-    r_sb4 = 0.40 * bmsy / p_sbt
-    r_sb5 = 0.80 * bmsy / p_sbt
+    # Age floor for the age-3+ exploitation rate. Ages in this model run from
+    # `m.ages`, so the floor is defined by age, not by row index.
+    dc = m.control.decision
+    age_rows = findall(i -> m.ages[i] >= dc.age_floor, 1:na)
+    b_age = sum(pop.N[ny + 1, age_rows] .* exp.(-mort.M_tot[ny, age_rows]) .* m.avg_wt[age_rows])
 
-    ut = tac / (p_sbt + 1e-15)
-    r_u1 = ut / (umsy + 1e-15)
-    r_u2 = ut / (0.5 * umsy + 1e-15)
-    r_u3 = ut / ((2.0 / 3.0) * umsy + 1e-15)
+    eps = dc.epsilon
+    counts = Dict{Symbol, Any}(
+        :decline => 0, :lt_bo => zeros(Int, length(dc.sb_bo_thresholds)),
+        :lt_bmsy => zeros(Int, length(dc.sb_bmsy_thresholds)),
+        :gt_umsy => zeros(Int, length(dc.u_umsy_thresholds)),
+        :gt_u_floor => 0
+    )
+    dsb5_sum = 0.0
 
-    age3_plus = sum(N_nyr1[3:end] .* exp.(-mort.M_tot[ny, 3:end]) .* m.avg_wt[3:end])
-    u20 = tac / (age3_plus + 1e-15)
-    r_u4 = u20 / 0.20
+    for _ in 1:n_sim
+        multiplier = tau > 0.0 ? exp(rand(rng, Normal(0.0, tau))) : 1.0
+        sb = sb_anchor * multiplier
+        u = tac / (sb + eps)
+        u_age = tac / (b_age * multiplier + eps)
 
-    # 5-year rate of change in historical spawning biomass
-    sbt_hist = [sum(pop.N[t, :] .* exp.(-mort.Z[t, :] .* sf) .* m.fec[t, :]) for t in 1:ny]
-    push!(sbt_hist, p_sbt)
-    t_end = length(sbt_hist)
-    dsb5 = (t_end >= 6) ?
-           sum(log.(sbt_hist[(t_end - 4):t_end]) .- log.(sbt_hist[(t_end - 5):(t_end - 1)])) / 5.0 :
-           0.0
+        counts[:decline] += (sb < SB_nyr)
+        for (i, t) in enumerate(dc.sb_bo_thresholds)
+            counts[:lt_bo][i] += (sb < t * bo)
+        end
+        for (i, t) in enumerate(dc.sb_bmsy_thresholds)
+            counts[:lt_bmsy][i] += (sb < t * bmsy)
+        end
+        for (i, t) in enumerate(dc.u_umsy_thresholds)
+            counts[:gt_umsy][i] += (u > t * umsy + eps)
+        end
+        counts[:gt_u_floor] += (u_age > dc.age3_exploitation_limit)
+        dsb5_sum += log(sb / (SB_nyr + eps))
+    end
 
     return DecisionMetrics(
-        tac, r_sb1, r_sb2, r_sb3, r_sb4, r_sb5,
-        r_u1, r_u2, r_u3, r_u4, dsb5 + 1.0
+        Float64(tac),
+        counts[:decline] / n_sim,
+        counts[:lt_bo][1] / n_sim, counts[:lt_bo][2] / n_sim,
+        counts[:lt_bmsy][1] / n_sim, counts[:lt_bmsy][2] / n_sim,
+        counts[:gt_umsy][1] / n_sim, counts[:gt_umsy][2] / n_sim,
+        counts[:gt_umsy][3] / n_sim,
+        counts[:gt_u_floor] / n_sim, dsb5_sum / n_sim
     )
 end
 
 """
-    decision_table(model, x) -> Vector{DecisionMetrics}
+    decision_table(model, x; n_sim = 1000, rng = Random.default_rng()) -> Vector{DecisionMetrics}
 
 Evaluates projected risk metrics across all TAC options defined in the model's
-projection control file (`.pfc`).
+projection control table. Thresholds come from the `[decision]` section of the
+configuration file.
 """
-function decision_table(m::StockModel, x::AbstractVector{<:Real})
-    return [project_population(m, x, tac) for tac in m.projection.tac]
+function decision_table(m::StockModel, x::AbstractVector{<:Real};
+                         n_sim::Integer = 1000,
+                         rng::AbstractRNG = Random.default_rng())
+    return [project_population(m, x, tac; n_sim = n_sim, rng = rng)
+            for tac in m.projection.tac]
 end
 
 """

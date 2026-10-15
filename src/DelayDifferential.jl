@@ -16,9 +16,10 @@ using LinearAlgebra
 using Statistics
 using Distributions
 using Turing
+using ..Config
 
-export DdeModelConfig
-export default_snowcrab_dde_config, dde_derivatives, simulate_dde_system
+export DdeModelConfig, load_dde_config
+export dde_derivatives, simulate_dde_system
 export bayesian_delay_differential_model
 export DelayDifferenceConfig, DelayDifferenceResult
 export delay_difference_step, simulate_delay_difference, extract_annual_recruitment

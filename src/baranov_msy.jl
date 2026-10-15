@@ -3,31 +3,34 @@
 # ------------------------------------------------------------------------------------
 
 """
-    solve_baranov_f(ct, m, V, na, wa; max_iter=50, tol=1e-12, max_f=5.0) -> Vector{Float64}
+    solve_baranov_f(ct, m, V, na, wa; tol = 1e-10, max_iter = 100, f_lower = 1e-15, f_upper = 5.0) -> Vector{Float64}
 
 Solves the multi-gear Baranov catch equation for instantaneous fishing mortalities `ft`
-using a Newton-Raphson iteration given:
+given:
 - `ct`: observed catch by gear (in weight)
 - `m`: instantaneous natural mortality rate
-- `V`: gear-specific selectivity matrix (`ngear × nages`)
+- `V`: gear-specific selectivity matrix (`ngear x nages`)
 - `na`: numbers at age at the start of the year
 - `wa`: mean weight-at-age
+- `tol`: convergence tolerance on `norm(C_model - C_obs)`
+- `max_iter`: iteration limit, passed to the shared Newton solver
+- `f_lower`, `f_upper`: admissible box for each gear's fishing mortality
+
+Newton's method is run by [`Solvers.solve_newton_vector`](@ref), the single Newton
+implementation in the package, using the analytic Jacobian evaluated below. The residual
+and its Jacobian are computed at the same `ft`, so there is no separate convergence loop
+at this call site.
 """
 function solve_baranov_f(ct::AbstractVector{<:Real}, m::Real, V::AbstractMatrix{<:Real},
                          na::AbstractVector{<:Real}, wa::AbstractVector{<:Real};
-                         max_iter::Integer = 50, tol::Real = 1e-12, max_f::Real = 5.0)
+                         tol::Real = 1.0e-10, max_iter::Integer = 100,
+                         f_lower::Real = 1.0e-15, f_upper::Real = 5.0)
     ng = length(ct)
     na_len = length(na)
     ba = na .* wa
 
-    # Initial guess
-    bt = sum(na .* exp(-0.5 * m) .* wa)
-    ft = [ct[i] / (bt + 1e-10) for i in 1:ng]
-
-    J = zeros(Float64, ng, ng)
-    chat = zeros(Float64, ng)
-
-    for its in 1:max_iter
+    # Catch and Jacobian of the model catch with respect to the per-gear F vector.
+    function catch_and_jacobian(ft::AbstractVector{<:Real})
         F_gear = [ft[i] .* V[i, :] for i in 1:ng]
         Z = fill(Float64(m), na_len)
         for i in 1:ng
@@ -36,74 +39,80 @@ function solve_baranov_f(ct::AbstractVector{<:Real}, m::Real, V::AbstractMatrix{
         sa = exp.(-Z)
         oa = 1.0 .- sa
 
+        chat = zeros(Float64, ng)
+        J = zeros(Float64, ng, ng)
         for i in 1:ng
             for j in 1:ng
                 if i == j
                     k1 = ba .* (V[i, :] ./ Z)
                     k2 = k1 .* V[i, :]
                     k3 = k2 ./ Z
-                    dCdF = -sum(k1 .* oa) - ft[i] * sum(k2 .* sa) + ft[i] * sum(k3 .* oa)
-                    J[i, j] = dCdF
+                    J[i, j] = -sum(k1 .* oa) - ft[i] * sum(k2 .* sa) + ft[i] * sum(k3 .* oa)
                     chat[i] = ft[i] * sum(k1 .* oa)
                 else
                     t1 = (ft[i] .* ba .* V[i, :]) ./ Z
                     t2 = t1 .* V[j, :]
                     t3 = t2 ./ Z
-                    dCdF = -sum(t2 .* sa) + sum(t3 .* oa)
-                    J[j, i] = dCdF
+                    J[j, i] = -sum(t2 .* sa) + sum(t3 .* oa)
                 end
             end
         end
-
-        fx = ct .- chat
-        if norm(fx) < tol
-            break
-        end
-
-        invJ = -inv(J)
-        ft .+= invJ * fx
-
-        for i in 1:ng
-            ft[i] = clamp(ft[i], 1e-15, max_f)
-        end
+        return chat, J
     end
 
-    for i in 1:ng
-        if ft[i] > max_f
-            ft[i] = max_f
-        end
-    end
-    return ft
+    residual(ft::AbstractVector) = ct .- first(catch_and_jacobian(ft))
+    jacobian(ft::AbstractVector) = last(catch_and_jacobian(ft))
+
+    # Initial guess: split the total catch over gears in proportion to their observed
+    # catch, on vulnerable biomass.
+    bt = sum(na .* exp(-0.5 * m) .* wa) + 1.0e-10
+    ft0 = collect(Float64(ct[i]) / bt for i in 1:ng)
+    ft0 = clamp.(ft0, f_lower, f_upper)
+
+    return Solvers.solve_newton_vector(residual, jacobian, ft0;
+                                       tol = tol, max_iter = max_iter,
+                                       lower = fill(f_lower, ng),
+                                       upper = fill(f_upper, ng))
 end
 
 """
     MSYEquilibrium
 
-Container for equilibrium and reference point quantities:
-`fmsy`, `msy`, `bmsy`, `bo`, `umsy`, and yield curves.
+Container for equilibrium and reference point quantities. All vectors are per gear.
+
+# Fields
+- `bo::Float64`: unfished (virgin) spawning biomass ``B_0``
+- `bmsy::Float64`: spawning biomass expected to produce MSY
+- `fmsy::Vector{Float64}`: fishing mortality resulting in MSY
+- `fall::Vector{Float64}` fishing mortality rescaled to the historical catch allocation
+- `msy::Vector{Float64}`: Maximum Sustainable Yield as a fleet-wise vector
+- `umsy::Float64`: exploitation rate at MSY
+- `spr_msy::Float64`: spawning potential ratio at MSY
+- `re::Float64`: equilibrium recruitment at MSY
+- `be::Float64`: biomass in the absence of fishing for the year of MSY
+
+`rmsy` and `ye` were removed as duplicates of `re` and `msy` respectively.
 """
 struct MSYEquilibrium
     bo::Float64
     bmsy::Float64
-    rmsy::Float64
     fmsy::Vector{Float64}
     fall::Vector{Float64}
     msy::Vector{Float64}
     umsy::Float64
     spr_msy::Float64
     re::Float64
-    ye::Vector{Float64}
     be::Float64
 end
 
 """
-    calc_equilibrium_point(fe, ro, h, m, rho, wa, fa, V) -> NamedTuple
+    calc_equilibrium_point(fe, ro, h, m, spawn_frac, wa, fa, V) -> NamedTuple
 
 Compute equilibrium recruitment, yield, and spawning biomass for a given vector
 of fishing mortalities `fe` across gears.
 """
 function calc_equilibrium_point(fe::AbstractVector{<:Real}, ro::Real, h::Real, m::Real,
-                                rho::Real, wa::AbstractVector{<:Real},
+                                spawn_frac::Real, wa::AbstractVector{<:Real},
                                 fa::AbstractVector{<:Real}, V::AbstractMatrix{<:Real})
     sage = 1
     nage = length(wa)
@@ -113,7 +122,7 @@ function calc_equilibrium_point(fe::AbstractVector{<:Real}, ro::Real, h::Real, m
     for k in 1:ngear
         za .+= fe[k] .* V[k, :]
     end
-    pza = rho .* za
+    pza = spawn_frac .* za
     sa = exp.(-za)
     psa = exp.(-pza)
     oa = 1.0 .- sa
@@ -128,8 +137,8 @@ function calc_equilibrium_point(fe::AbstractVector{<:Real}, ro::Real, h::Real, m
     qa = zeros(Float64, ngear, nage)
     for k in 1:ngear
         qa[k, :] .= (V[k, :] .* wa .* oa) ./ za
-        dlw[k, sage] = -psa[sage] * rho * V[k, sage]
-        d2lw[k, sage] = psa[sage] * (rho * V[k, sage])^2
+        dlw[k, sage] = -psa[sage] * spawn_frac * V[k, sage]
+        d2lw[k, sage] = psa[sage] * (spawn_frac * V[k, sage])^2
     end
 
     lz[sage] = 1.0
@@ -147,12 +156,12 @@ function calc_equilibrium_point(fe::AbstractVector{<:Real}, ro::Real, h::Real, m
             dlz[k, j] = sa[j - 1] * (dlz[k, j - 1] - lz[j - 1] * V[k, j - 1])
             d2lz[k, j] = sa[j - 1] * (d2lz[k, j - 1] + lz[j - 1] * V[k, j - 1]^2)
 
-            dlw[k, j] = -lz[j] * rho * V[k, j] * psa[j]
-            d2lw[k, j] = lz[j] * (rho * V[k, j])^2 * psa[j]
+            dlw[k, j] = -lz[j] * spawn_frac * V[k, j] * psa[j]
+            d2lw[k, j] = lz[j] * (spawn_frac * V[k, j])^2 * psa[j]
 
             if j == nage
                 dlz[k, j] = dlz[k, j] / oa[j] - lz[j - 1] * sa[j - 1] * V[k, j] * sa[j] / (oa[j]^2)
-                dlw[k, j] = -lz[j - 1] * sa[j - 1] * rho * V[k, j] / oa[j] -
+                dlw[k, j] = -lz[j - 1] * sa[j - 1] * spawn_frac * V[k, j] / oa[j] -
                             lz[j - 1] * psa[j] * V[k, j] * sa[j] / (oa[j]^2)
 
                 V1 = V[k, j - 1]
@@ -163,8 +172,8 @@ function calc_equilibrium_point(fe::AbstractVector{<:Real}, ro::Real, h::Real, m
                              2 * lz[j - 1] * sa[j - 1] * V2^2 * sa[j]^2 / (oa[j] * oa2) +
                              lz[j - 1] * sa[j - 1] * V2^2 * sa[j] / oa2
 
-                d2lw[k, j] = lz[j - 1] * (rho * V2)^2 * psa[j] / oa[j] +
-                             2 * lz[j - 1] * rho * V2^2 * psa[j] * sa[j] / oa2 +
+                d2lw[k, j] = lz[j - 1] * (spawn_frac * V2)^2 * psa[j] / oa[j] +
+                             2 * lz[j - 1] * spawn_frac * V2^2 * psa[j] * sa[j] / oa2 +
                              2 * lz[j - 1] * psa[j] * V2^2 * sa[j]^2 / (oa[j] * oa2) +
                              lz[j - 1] * psa[j] * V2^2 * sa[j] / oa2
             end
@@ -174,7 +183,7 @@ function calc_equilibrium_point(fe::AbstractVector{<:Real}, ro::Real, h::Real, m
     # Unfished eggs per recruit
     lx0 = zeros(Float64, nage)
     for i in 1:nage
-        lx0[i] = exp(-m * (i - 1) - rho * m)
+        lx0[i] = exp(-m * (i - 1) - spawn_frac * m)
         if i == nage
             lx0[i] /= (1.0 - exp(-m))
         end
@@ -271,64 +280,70 @@ function calc_reference_points(m::StockModel, mort, log_sel, theta::AbstractVect
     ro = exp(theta[1])
     h = theta[2]
     m_val = mort.m_bar
-    rho = m.control.misc.spawn_fraction
+    spawn_frac = m.control.misc.spawn_fraction
     wa = m.avg_wt
     fa = m.avg_fec
 
-    # 1. Unconstrained Fmsy (Newton-Raphson per gear)
-    fe = fill(0.6 * m_val, nfleet)
-    x1, x2 = 1.0e-5, 300.0
-    tol = 1.0e-9
-    max_iter = 300
+    # 1. Unconstrained Fmsy. Newton's method on the equilibrium yield gradient is run by
+    # the shared solver; the residual stacks each gear's dYe with one scalar MSY
+    # condition (total yield gradient zero) so the system is square and well determined.
+    f_lower_msy = 1.0e-5
+    f_upper_msy = 300.0
+    tol_msy = 1.0e-9
+    max_iter_msy = 300
 
-    for iter in 1:max_iter
-        eq = calc_equilibrium_point(fe, ro, h, m_val, rho, wa, fa, V)
-        if norm(eq.dye) < tol
-            break
-        end
-        invJ = -inv(eq.d2ye)
-        step = invJ * eq.dye
-        fe .+= step
-        for i in 1:nfleet
-            if (x1 - fe[i]) * (fe[i] - x2) < 0.0
-                fe[i] -= 0.999 * step[i]
-            end
-        end
+    function msy_residual(f::AbstractVector{<:Real})
+        eq = calc_equilibrium_point(f, ro, h, m_val, spawn_frac, wa, fa, V)
+        return vcat(eq.dye, sum(eq.dye))
     end
-    fmsy = copy(fe)
-    eq_msy = calc_equilibrium_point(fmsy, ro, h, m_val, rho, wa, fa, V)
 
-    # 2. Allocated Fall (respecting gear allocation ak)
-    fall = fill(0.6 * m_val, nfleet)
-    fbar = sum(fall) / nfleet
-    for iter in 1:max_iter
-        fk = fill(fbar, nfleet)
-        eq1 = calc_equilibrium_point(fk, ro, h, m_val, rho, wa, fa, V)
+    function msy_jacobian(f::AbstractVector{<:Real})
+        eq = calc_equilibrium_point(f, ro, h, m_val, spawn_frac, wa, fa, V)
+        # d(sum dYe)/dF_j = sum over k of the second derivative of yield
+        extra = vec(sum(eq.d2ye, dims = 1))
+        return vcat(eq.d2ye, extra')
+    end
+
+    fmsy0 = fill(0.6 * m_val, nfleet)
+    fe = Solvers.solve_newton_vector(
+        msy_residual, msy_jacobian, fmsy0;
+        tol = tol_msy, max_iter = max_iter_msy,
+        lower = fill(f_lower_msy, nfleet),
+        upper = fill(f_upper_msy, nfleet))
+    fmsy = copy(fe)
+    eq_msy = calc_equilibrium_point(fmsy, ro, h, m_val, spawn_frac, wa, fa, V)
+
+    # 2. Allocated Fall (respecting gear allocation ak). One scalar condition on F_bar:
+    # d(sum Ye)/dF_bar == 0, with the gear allocation re-imposed at every trial.
+    fbar = 0.6 * m_val
+    fall = fbar .* ak
+    for _ in 1:max_iter_msy
+        eq1 = calc_equilibrium_point(fbar .* ak, ro, h, m_val, spawn_frac, wa, fa, V)
         tot_ye = sum(eq1.ye)
         lambda = ak ./ ((tot_ye > 0 ? eq1.ye ./ tot_ye : ak) .+ 1e-15)
 
         fk = fbar .* lambda
-        eq2 = calc_equilibrium_point(fk, ro, h, m_val, rho, wa, fa, V)
+        eq2 = calc_equilibrium_point(fk, ro, h, m_val, spawn_frac, wa, fa, V)
         dYe = sum(eq2.dye)
         d2Ye = sum(diag(eq2.d2ye))
 
-        if abs(dYe) < tol
-            fall .= fk
+        if abs(dYe) < tol_msy
+            fall = fk
             break
         end
 
         step = dYe / d2Ye
         fbar -= step
-        if (x1 - fbar) * (fbar - x2) < 0.0
+        if (f_lower_msy - fbar) * (fbar - f_upper_msy) < 0.0
             fbar += 0.98 * step
         end
-        fall .= fbar .* lambda
+        fall = fbar .* lambda
     end
 
     umsy = sum(eq_msy.ye) / (eq_msy.bi + 1e-15)
 
     return MSYEquilibrium(
-        eq_msy.bo, eq_msy.be, eq_msy.re, fmsy, fall, eq_msy.ye,
-        umsy, eq_msy.spr, eq_msy.re, eq_msy.ye, eq_msy.be
+        eq_msy.bo, eq_msy.be, fmsy, fall, eq_msy.ye,
+        umsy, eq_msy.spr, eq_msy.re, eq_msy.be
     )
 end

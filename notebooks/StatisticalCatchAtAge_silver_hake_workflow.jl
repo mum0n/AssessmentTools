@@ -14,7 +14,7 @@ Julia `AssessmentTools` package.
 
 ### Analytical Formulation & Biological Assumptions
 1. **Age-Structured Population Dynamics**:
-   Tracks cohorts across ages 1 to 10+ over 1978–2011 ($ny = 34$ years). Population numbers-at-age follow continuous exponential decay:
+   Tracks cohorts across ages 1 to 9 over 1960–2011 ($ny = 52$ years). Population numbers-at-age follow continuous exponential decay:
    $$N_{t+1, a+1} = N_{t,a} \exp\left(-(M_a + F_{t,a})\right)$$
    Plus-group accumulates older survivors ($a = 10+$):
    $$N_{t+1, A} = N_{t, A-1} e^{-(M_{A-1} + F_{t, A-1})} + N_{t, A} e^{-(M_A + F_{t, A})}$$
@@ -37,6 +37,60 @@ Julia `AssessmentTools` package.
 - Showell, M.A., & Fanning, L.P. (1999). Assessment of the Scotian Shelf silver hake population in NAFO Div. 4VWX. *DFO Can. Stock Assess. Sec. Res. Doc.* 99/149.
 - Fournier, D.A., & Archibald, C.P. (1982). A general theory for analyzing catch at age data. *Can. J. Fish. Aquat. Sci.*, 39(8): 1195–1207.
 - Methot, R.D., & Wetzel, C.R. (2013). Stock synthesis: a biological and statistical framework for fish stock assessment and fishery management. *Fish. Res.*, 142: 86–99.
+
+## Method, assumptions, strengths, weaknesses
+
+**Method.** A Stock Synthesis-style statistical catch-at-age model (`src/dynamics.jl`,
+`src/objective.jl`). Numbers at age follow an annual cohort transition
+`N[t+1, a+1] = N[t, a] * exp(-Z[t, a])` with a plus group, and age-1 recruitment is set
+by a stock-recruitment function. Fishing mortality is age-specific,
+`Z[t, a] = M + sum_g s[g, a] * F[t, g]`, and the likelihood combines catch, survey index,
+age-composition and process-residual terms.
+
+**Model structure**
+- Von Bertalanffy growth and logistic maturity define mean weight and fecundity at age.
+- Selectivity is parameterised per gear by the declared type (logistic in age, logistic
+  in length, age-specific, or a length spline) with optional phased time blocking.
+- Natural mortality is an input; a log-scaled random walk in `M` can be activated.
+- Total catch, surveys, age composition, and priors on the biological parameters are
+  combined into `objective_function`, which is minimised by `Optim` L-BFGS.
+- Reference points come from `calc_reference_points`, which derives `F_MSY`, `B_MSY`,
+  `B_0` and `U_MSY` by solving equilibrium yield on the selected terminal selectivity.
+
+**Phasing.** Phases are a schedule for the order in which parameters become estimable,
+not a statistical statement. The control file assigns each parameter a phase; a negative
+phase means the parameter is held at its starting value for the whole fit.
+
+**Assumptions**
+- Catch is fully reported and known in biomass (or per the declared `catch_type`).
+- Survey index selectivity is proportional to the modelled vulnerability.
+- Age-composition sample sizes are adequately large for a multinomial approximation.
+- Natural mortality is exogenous unless the `M` random walk is activated.
+- Recruitment anomalies are independent, given the recruitment prior.
+- `avg_wt` and `avg_fec` are treated as fixed projection inputs, not uncertain.
+
+**Strengths**
+- The phase ordering terminates at a reproducible point estimate: at the published
+  parameter values the objective is 280.38480660973084, matching the benchmark in
+  `data/silverhake/parameters.toml`, so every component of the likelihood is verified.
+- Mean weight and maturity are derived from the declared growth and maturity functions,
+  so no separate weight table has to be maintained.
+- Selectivity, mortality and reference points are separated, so the effect of a
+  selectivity change can be traced through the objective.
+- Diagnostics are first class: `objective_function` returns each likelihood component
+  separately, and the run report states the objective, the phase, and convergence.
+
+**Weaknesses**
+- Many parameters relative to a single survey index; selectivity and recruitment
+  deviations trade off, so profile likelihoods should be examined.
+- Reference points assume equilibrium. When biomass is well below `B_0`, `F_MSY` from
+  an equilibrium solver can overstate the fishing rate required to reach that yield.
+- `avg_wt` is treated as fixed, so the forecast does not carry weight uncertainty.
+- The likelihood is not bootstrap-consistent by itself; prediction intervals need an
+  explicit bootstrap or a Bayesian model.
+
+**Bayesian extension.** The same fit can be expressed as a Turing model and run with
+NUTS, ADVI, or MAP through `AssessmentTools.InferenceBridge`.
 """
 
 # ╔═╡ 00000001-0000-0000-0000-000000000002
@@ -189,10 +243,10 @@ begin
     decision_summary = (
         TAC_mt = [m.tac for m in proj_table],
         P_SB_decline = round.([m.p_sb_decline for m in proj_table]; digits = 3),
-        P_SB_lt_025B0 = round.([m.p_sb_lt_025bo for m in proj_table]; digits = 3),
-        P_SB_lt_040Bmsy = round.([m.p_sb_lt_040bmsy for m in proj_table]; digits = 3),
-        P_SB_lt_080Bmsy = round.([m.p_sb_lt_080bmsy for m in proj_table]; digits = 3),
-        P_U_gt_Umsy = round.([m.p_u_gt_umsy for m in proj_table]; digits = 3),
+        P_SB_lt_Bo_1 = round.([m.p_sb_lt_bo_1 for m in proj_table]; digits = 3),
+        P_SB_lt_Bmsy_1 = round.([m.p_sb_lt_bmsy_1 for m in proj_table]; digits = 3),
+        P_SB_lt_Bmsy_2 = round.([m.p_sb_lt_bmsy_2 for m in proj_table]; digits = 3),
+        P_U_gt_Umsy_1 = round.([m.p_u_gt_umsy_1 for m in proj_table]; digits = 3),
         Avg_5yr_SB_Trend = round.([m.dsb5_rate for m in proj_table]; digits = 3)
     )
     decision_summary

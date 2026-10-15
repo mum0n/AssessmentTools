@@ -35,6 +35,66 @@ This notebook introduces the continuous size- and stage-structured delay differe
 - Choi, J.S. (2024). Continuous size-structured delay differential models for snow crab (*Chionoecetes opilio*) fisheries assessment. *DFO Can. Sci. Advis. Sec. Res. Doc.* 2024/nnn.
 - Gurney, W.S.C., & Nisbet, R.M. (1998). *Ecological Dynamics*. Oxford University Press.
 - Macdonald, N. (1978). *Time Lags in Biological Models*. Lecture Notes in Biomathematics, Springer-Verlag, Berlin.
+
+## Method, assumptions, strengths, weaknesses
+
+**Method.** `src/delay_differential.jl` integrates a six-stage continuous delay
+differential system with a fixed-step explicit scheme, staged mortality, maturation
+lags, and impulsive catch removal:
+
+```
+du[i] = v[i] * u[i+1](t-1) * K[i+1]/K[i] - v[i-1] * u[i](t-1) - dr[i]   (i = 1..4)
+du[5] = b5 . u_mat(t - tau) * K[6]/K[5] - v[4] u[5] - dr[5]
+du[6] = b6 . u_mat(t - tau) - dr[6]
+```
+
+with `dr = d .* u .+ density .* (u.^2 ./ H)` for natural and density-dependent
+mortality, and `H(t)` a habitat scalar.
+
+**Stage indices.** Growth transfer flows from stage 5 towards stage 1, so the
+lowest index is the *terminal* class:
+
+| index | label   | stage                          |
+|:-----:|:--------|:-------------------------------|
+| 1     | `M0`    | commercial legal males (>= 95 mm) |
+| 2     | `M1`    | instar 12 male recruits        |
+| 3     | `M2`    | instar 11                      |
+| 4     | `M3`    | instar 10                      |
+| 5     | `M4`    | instar 9, entry stage          |
+| 6     | `f_mat` | mature females                 |
+
+Removals should be applied to stage 1; `extract_annual_recruitment` reports stage 2
+by default (the newly recruitable class).
+
+**Assumptions**
+- Stages are closed classes joined by single moult transitions; no backward moulting.
+- Development lags `tau` are constants (7, 8, 9 yr), not temperature-dependent.
+- Maturation and sex change are represented by the recruitment weights into the male
+  entry and female classes; individual-level growth is aggregated away.
+- Impulsive removal subtracts stock instantly within one time step.
+- Initial condition is the carrying capacity `K` in every stage, so early-year
+  dynamics are transient rather than equilibrium.
+
+**Strengths**
+- Resolves intra-annual dynamics and reproduces the effect of pulse fisheries, which
+  annual-step models cannot represent.
+- Carries a genuine development delay, so recruitment responds to female abundance
+  7-9 years earlier.
+- Stage structure makes sex-specific and maturity-specific harvest control natural.
+
+**Weaknesses**
+- More structural constants (carrying capacities, densities, transition and maturity
+  weights) than fishery data can usually identify; these are calibration inputs, not
+  estimated quantities.
+- Discretisation and impulsive-removal handling dominate numerical error, and the
+  scheme is only conditionally stable, so `dt` must be checked.
+- The starting condition at `K` is arbitrary; the first several years are transient.
+- Fitted remoteness from survey observations is high, so the model is best used for
+  scenario comparison rather than absolute status.
+
+**Estimation.** `InferenceBridge` (`src/InferenceBridge.jl`) provides MAP, NUTS and
+variational engines over the same Turing model, so no model is re-implemented to
+switch engines.
 """
 
 # ╔═╡ 40000001-0000-0000-0000-000000000002
@@ -73,8 +133,12 @@ md"""
 
 # ╔═╡ 40000001-0000-0000-0000-000000000006
 begin
-    cfg = default_snowcrab_dde_config()
+    # All DDE parameters are read from a user-level TOML file. No value is compiled
+    # into the package, and a missing key raises rather than silently defaulting.
+    dde_config_path = normpath(joinpath(@__DIR__, "..", "data", "snowcrab", "dde.toml"))
+    cfg = load_dde_config(dde_config_path)
     (
+        source = basename(dde_config_path),
         stages = cfg.num_stages,
         delays_years = cfg.lags,
         asymptotic_carrying_capacities = cfg.k_carrying_capacity,

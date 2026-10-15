@@ -86,8 +86,18 @@ function calc_total_mortality(m::StockModel, log_sel, log_ft_pars, log_m_nodes, 
     log_m_devs = zeros(T, ny)
     misc = m.control.misc
     if misc.n_m_nodes > 0 && is_active(misc.m_dev_phase, ctx)
+        # A cubic spline needs at least two nodes; a single node has no meaning here
+        # and the previous implementation would call `unit_nodes` with n = 1.
+        misc.n_m_nodes > 1 ||
+            error("The natural-mortality random walk needs n_m_nodes >= 2 (got $(misc.n_m_nodes)).")
         s = CubicSpline(unit_nodes(misc.n_m_nodes), log_m_nodes)
-        log_m_devs[2:ny] .= s(collect(0:(ny - 2)) ./ (ny - 1))
+        log_m_devs = zeros(Float64, ny)
+        log_m_devs .= 0.0
+        if ny > 2
+            log_m_devs[2:ny] .= s(collect(0:(ny - 2)) ./ (ny - 1))
+        end
+        all(isfinite, log_m_devs) ||
+            error("calc_total_mortality: spline interpolation produced non-finite values.")
         for t in 2:ny
             M_tot[t, :] .= M_tot[t - 1, :] .* exp(log_m_devs[t])
         end

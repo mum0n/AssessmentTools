@@ -1,0 +1,41 @@
+# Stage-structured (Lefkovitch) population configuration.
+# Read by `AssessmentTools.StageMatrix.load_stage_matrix_config`.
+# Every key is required; a missing key raises rather than silently defaulting.
+
+[stages]
+n_stages = 5
+
+# Per-capita offspring produced per step, by stage (only the mature stages are non-zero).
+fertility = [0.0, 0.0, 0.0, 6.5, 8.2]
+
+# Probability of surviving the step, within each stage.
+survival = [0.55, 0.82, 0.90, 0.94, 0.96]
+
+# Probability of staying in the same stage given survival.
+retention = [0.85, 0.75, 0.70, 0.60, 0.40]
+
+# Probability of advancing one stage given survival.
+transition = [0.14, 0.20, 0.25, 0.30, 0.40]
+
+# Biomass per individual in each stage (arbitrary units).
+stage_weights = [1.0, 3.5, 8.0, 14.0, 19.0]
+
+# Maturing fraction of each stage.
+maturity = [0.0, 0.0, 0.0, 0.55, 0.95]
+
+# Survey catchability per stage.
+catchability = [0.9, 0.8, 0.7, 0.6, 0.5]
+
+# Starting abundance per stage.
+initial_abundance = [120.0, 80.0, 45.0, 20.0, 9.0]
+
+n_years = 30
+
+[simulation]
+# How a saved posterior ensemble enters the projection:
+#   1 = resample_each_step : a fresh joint draw at every time step (default)
+#   2 = single_draw       : one joint draw held for the whole projection
+#   3 = posterior_mean    : the ensemble mean of each field
+#   4 = point             : point estimate only, ensemble ignored
+parameter_combination = 1
+n_draws = 200

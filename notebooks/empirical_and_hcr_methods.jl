@@ -25,6 +25,58 @@ This Pluto notebook illustrates the complementary empirical and simulation metho
    - Interannual TAC change constraints ($\pm 15\%$ dampeners) to smooth quota volatility.
 5. **Integration with Integrated Catch-at-Age Assessment**:
    - Applying empirical estimators directly to the internal Silver Hake and Cusk assessment data.
+
+## Method, assumptions, strengths, weaknesses
+
+### Catch curves (`src/catch_curve.jl`)
+- **Method.** `chapman_robson` returns the MVUE of annual survival
+  `S = t̄ / (1 + t̄ − 1/n)` from the catch curve recoded so the first fully recruited
+  age is class 0, with `Z = −log(S)`. `catch_curve_linear` regresses `log(C)` on the
+  recoded age; Maceina weighting is optional (`weighted=false` by default).
+- **Assumptions.** The descending limb is a single cohort exposed to constant
+  mortality; the peak of the catch curve marks full recruitment (`recruitment_age`);
+  catch is proportional to abundance.
+- **Strengths.** Closed-form standard errors; almost no data requirement; fast.
+- **Weaknesses.** Sensitive to a wrong `recruitment_age` and to non-constant
+  asymptotic `Z`. Cannot separate fishing from natural mortality, and pooling across
+  years mixes cohorts, which biases `S` low.
+
+### Depletion models (`src/depletion.jl`)
+- **Method.** Leslie (linear) and Delury (log-linear) regressions of CPUE on cumulative
+  catch, with delta-method variances for `N0` and `q`.
+- **Assumptions.** The surveyed stock is closed aside from the modelled removal; `q` is
+  constant; survey timing is consistent.
+- **Strengths.** Few data required; gives usable `N0` and `q` with honest uncertainty.
+- **Weaknesses.** No handles density dependence, migration, or catch-rate
+  hyperstability/hyperdepletion, all of which are common.
+
+### Age-length keys (`src/age_length_key.jl`)
+- **Method.** `compute_alk_matrix` builds the conditional matrix `P(a | l)` from aged
+  subsamples; `apply_age_length_key` expands aggregate length frequencies into age
+  composition by normalising rows.
+- **Assumptions.** The aged subsample is representative of the length composition of
+  the fishery or survey.
+- **Strengths.** Cheap conversion from length to age data; row normalisation guarantees
+  compositions sum to one.
+- **Weaknesses.** Atypical age structure inside a length bin is invisible, and
+  unobserved ageing error is not propagated.
+
+### Harvest control rules (`src/harvest_control.jl`)
+- **Method.** `hockey_stick_tac` applies a piecewise-linear HCR with limit
+  (`blim`), precautionary (`bpa`), `flow` and `ftarget` levels;
+  `apply_tac_stabilizer` bounds the annual TAC change by a change constraint; `simulate_mse`
+  runs the closed-loop management cycle.
+- **Assumptions.** The HCR operative reference point proxies stock status, and biomass
+  and catch are in the same units.
+- **Strengths.** Transparent, auditable, and directly implementable; the change
+  stabiliser prevents quota whiplash.
+- **Weaknesses.** Purely reactive; no stock-recruit or environmental signal; and the
+  stabiliser slows the response to genuine stock decline.
+
+### Integrated with catch-at-age
+The empirical estimators in this notebook use the same `catch` and `process` arguments
+as the stochastic age-structured models of the SCAA module so that empirical and
+model-based estimates can be compared on identical data.
 """
 
 # ╔═╡ 00000003-0000-0000-0000-000000000002

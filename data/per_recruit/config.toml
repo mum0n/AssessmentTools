@@ -1,0 +1,25 @@
+# Yield- and spawning-biomass-per-recruit configuration.
+# Read by `AssessmentTools.PerRecruit.load_per_recruit_config`.
+# Every key is required; a missing key raises rather than silently defaulting.
+
+[recruits]
+# Ages from first to last class.
+ages = [1, 2, 3, 4, 5, 6, 7, 8]
+
+# Mean weight at age (g).
+weight = [45.0, 110.0, 230.0, 400.0, 630.0, 890.0, 1150.0, 1350.0]
+
+# Fraction mature at age.
+maturity = [0.0, 0.0, 0.10, 0.45, 0.80, 0.95, 1.0, 1.0]
+
+# Gear vulnerability at age; normalised internally to its maximum.
+selectivity = [0.02, 0.08, 0.30, 0.70, 0.95, 1.0, 1.0, 1.0]
+
+# Instantaneous natural mortality at age.
+natural_mortality = [1.10, 0.70, 0.45, 0.32, 0.26, 0.22, 0.20, 0.20]
+
+# Reference F at age used to scale the fishing multiplier.
+fishing_mortality_input = [0.05, 0.20, 0.40, 0.50, 0.50, 0.50, 0.50, 0.50]
+
+# Fraction of annual total mortality occurring before spawning.
+proportion_escaping_spawn = 0.55
