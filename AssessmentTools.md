@@ -16,7 +16,9 @@ AssessmentTools
 ├── StatisticalCatchAtAge  # Age-structured synthesis, forward dynamics, phased AD
 │                          # estimation, MSY reference points
 ├── BiomassDynamics     # Discrete logistic / Schaefer surplus production,
-│                        # seasonal survey calibrations, continuous ODE form
+│                       # seasonal survey calibrations
+├── ContinuousBiomassDynamics  # Continuous-time logistic biomass dynamics,
+│                               # semi-implicit Euler integration
 ├── CohortAnalysis      # Pope's cohort analysis, exact Gulland/Baranov VPA
 │                        # back-reconstruction
 ├── DelayDifferential   # Continuous size- and stage-structured DDE models with
@@ -708,12 +710,16 @@ Three gates, all run from the project root.
 **1. Package tests.** `julia --project=. --startup-file=no test/runtests.jl`
 
 ```
-Test Summary:                 | Pass  Total   Time
-AssessmentTools Package Tests |  125    125  27.8 s
-Test Summary:                                       | Pass  Total  Time
-SimulationEngine (Projection, Agents, Reaction/SSA) |   35     35  6.6 s
 Silver Hake Objective: 280.38480660973084
+Test Summary:                 | Pass  Total   Time
+AssessmentTools Package Tests |  125    125  29.2s
+Test Summary:                                       | Pass  Total  Time
+SimulationEngine (Projection, Agents, Reaction/SSA) |   35     35  6.9s
+Test Summary:                                   | Pass  Total  Time
+ContinuousBiomassDynamics (Continuous Logistic) |   15     15  0.2s
 ```
+
+Total 175 tests across three test sets.
 
 The benchmark objective being bit-identical is the key regression signal: the SCAA
 likelihood, selectivity layout, mortality recursion and reference-point machinery all
@@ -725,8 +731,12 @@ CRLF.
 
 **3. Notebooks.** Pluto is broken in the current environment (its own precompile raises
 a `BoundsError` inside `PlutoRunner`), so notebooks are parse-checked but not executed.
-Where a notebook was executable it was run end to end; that check is what surfaced the
-`removals_biomass` field error and confirmed the `AdaptResult` additions.
+Nine notebooks exist and all parse. Where a notebook could be executed it was run end to
+end; that check is what surfaced the `removals_biomass` field error and confirmed the
+`AdaptResult` additions. The `continuous_biomass_dynamics_workflow` and
+`stage_matrix_leslie_workflow` notebooks are written but **not yet executed**, because
+Pluto cannot start in this environment; they are costed to run end to end once Pluto is
+repaired.
 
 `--startup-file=no` is required: a user start-up file loads `Revise` into the global
 environment, which fails on a missing transitive dependency and aborts the run before the

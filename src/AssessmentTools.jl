@@ -31,6 +31,7 @@ include("InferenceBridge.jl")
 # Submodules are included cleanly so each domain is self-contained:
 include("StatisticalCatchAtAge.jl")
 include("BiomassDynamics.jl")
+include("ContinuousBiomassDynamics.jl")
 include("CohortAnalysis.jl")
 include("DelayDifferential.jl")
 include("Empirical.jl")
@@ -52,7 +53,7 @@ using .Management
 
 # Re-export submodules for explicit namespaced use
 export StatisticalCatchAtAge
-export BiomassDynamics
+export BiomassDynamics, ContinuousBiomassDynamics
 export CohortAnalysis
 export DelayDifferential
 export Empirical

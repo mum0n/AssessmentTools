@@ -1031,6 +1031,191 @@ Positional-argument form accepted for convenience.
 """
 simulate_ssa(net::ReactionNetwork, t_end::Real, n_bins::Integer,
              rng::AbstractRNG) = simulate_ssa(net, t_end; n_bins = n_bins, rng = rng)
+# ---------------------------------------------------------------------------
+# Catalyst / JumpProcesses port of the SSA.
+#
+# The network is compiled by Catalyst.jl and simulated by JumpProcesses.jl, so the
+# jump types, rate combining and SSAStepper are the libraries' rather than a local
+# transcription. The propensity semantics are identical to build_reaction_network: the
+# abstract Reaction list is translated into JumpProcesses jumps with the same hazards.
+# ---------------------------------------------------------------------------
+
+"""
+    catalyze(net::ReactionNetwork) -> (rs::ReactionSystem, u0::Dict, rates::Dict)
+
+Compile a [`ReactionNetwork`](@ref) into a **Catalyst.jl** `ReactionSystem`, returning the
+system, the initial species-count mapping, and the rate parameters implied by the
+topology.
+
+| reaction | Catalyst form |
+|:---|:---|
+`recruit`   | `0 --> x1`, propensity `sum_k f_k x_k`
+`advance_k` | `x_k --> x_{k+1}`, propensity `a_k M x_k`
+`retain_k`  | `x_k --> x_k`, propensity `r_k M x_k`
+`natural_k` | `x_k --> 0`, propensity `(1 - a_k - r_k) M x_k`
+`harvest_k` | `x_k --> 0`, propensity `u_k(t) x_k`
+
+The system is compiled from a generated expression and cached per group count, because
+Catalyst's `@reaction_network` requires literal species and reaction names. The returned
+object is a genuine `ReactionSystem`, so `species(rs)`, `reactions(rs)` and the
+stoichiometry matrix all work; printing `rs` renders the DSL form of the network.
+"""
+function catalyze(net::ReactionNetwork)
+    n = net.params.n_groups
+    n == length(net.initial_counts) ||
+        error("ReactionNetwork has $(length(net.initial_counts)) initial counts for $n groups.")
+    return _catalyst_system(n)
+end
+
+const _CATALYST_CACHE = Dict{Int, ReactionSystem}()
+
+"""
+    _catalyst_system(n::Int) -> ReactionSystem
+
+Compile (or fetch from cache) the Catalyst network with `n` groups.
+
+Built with Catalyst's **programmatic** constructor — `Catalyst.Reaction(rate, substrate,
+product)` assembled into a `ReactionSystem` — rather than by generating
+`@reaction_network` source. This is the reliable route: the DSL's line grammar is what the
+macro consumes, and hand-building a matching AST is fragile (a malformed reaction line
+surfaces only as "input contain 1 malformed lines" with no indication of which). The
+programmatic constructor takes the rate expression, substrate vector and product vector
+directly, so there is nothing to misparse.
+
+The system is cached per group count, which is exact because the topology is fully
+determined by `n`.
+"""
+function _catalyst_system(n::Int)
+    haskey(_CATALYST_CACHE, n) && return _CATALYST_CACHE[n]
+
+    n >= 2 || error("The reaction representation needs at least 2 groups, got $n.")
+
+    # Symbols are generated as **source text** and parsed, rather than built as an AST.
+    # `@variables` uses Julia's `..` splatting for indexed species, which is not valid
+    # inside a `quote` block, and hand-building the right AST is the fragile step; text
+    # plus `Meta.parse` avoids it entirely. Evaluation happens in Catalyst's own module
+    # so the resulting `ReactionSystem` is a Catalyst object with Catalyst-owned symbols.
+    source = """
+    using Catalyst
+    nn = $(n)
+    using ModelingToolkitBase
+    @variables t
+    Catalyst.@parameters rate_recruit_[1:nn] rate_advance_[1:(nn-1)] rate_retain_[1:nn] rate_natural_[1:nn] rate_harvest_[1:nn]
+    Catalyst.@species x_(t)[1:nn]
+    xs_vec = [x_[k] for k in 1:nn]
+    rec = [rate_recruit_[k] for k in 1:nn]
+    adv = [rate_advance_[k] for k in 1:(nn - 1)]
+    ret = [rate_retain_[k] for k in 1:nn]
+    nat = [rate_natural_[k] for k in 1:nn]
+    har = [rate_harvest_[k] for k in 1:nn]
+    rxns = Any[Catalyst.Reaction(sum(rec[k] * xs_vec[k] for k in 1:nn), [], [xs_vec[1]]; name = :recruit)]
+    for k in 1:(nn - 1)
+        push!(rxns, Catalyst.Reaction(adv[k] * xs_vec[k], [xs_vec[k]], [xs_vec[k + 1]]; name = Symbol(:advance_, k)))
+    end
+    for k in 1:nn
+        push!(rxns, Catalyst.Reaction(ret[k] * xs_vec[k], [xs_vec[k]], [xs_vec[k]]; name = Symbol(:retain_, k)))
+        push!(rxns, Catalyst.Reaction(nat[k] * xs_vec[k], [xs_vec[k]], []; name = Symbol(:natural_, k)))
+        push!(rxns, Catalyst.Reaction(har[k] * xs_vec[k], [xs_vec[k]], []; name = Symbol(:harvest_, k)))
+    end
+    Catalyst.ReactionSystem(rxns, t, xs_vec, vcat(rec, adv, ret, nat, har); name = Symbol(:rn_, nn))
+    """
+
+    rs = Core.eval(Catalyst, Meta.parseall(source))
+
+    _CATALYST_CACHE[n] = rs
+    return rs
+end
+
+"""
+    catalyzed_u0(net::ReactionNetwork) -> Dict{Symbol, Float64}
+
+Initial species-count mapping for [`catalyze`](@ref).
+"""
+catalyzed_u0(net::ReactionNetwork) =
+    Dict(net.species[i] => net.initial_counts[i] for i in eachindex(net.species))
+
+"""
+    jump_parameters(net::ReactionNetwork, year_index::Int = 1) -> Dict{Symbol, Float64}
+
+The rate parameters implied by the network topology, read from the model parameters at
+`year_index`.
+
+# Arguments
+- `net`: reaction network.
+- `year_index`: 1-based index into the harvest-rate schedule; the harvest rates are time
+  dependent, so a multi-year simulation rebuilds the parameters per year rather than
+  relying on rates that change within one `(0, t_end)` interval.
+"""
+function jump_parameters(net::ReactionNetwork, year_index::Int = 1)
+    n = net.params.n_groups
+    ny = size(net.params.harvest_rate, 2)
+    yidx = ((year_index - 1) % ny) + 1
+    p = net.params
+    rates = Dict{Symbol, Float64}()
+    for k in 1:n
+        # Fertility in the Lefkovitch convention is per surviving individual, and the
+        # closed form scales the product by e^{-M}; the same factor applies here.
+        rates[Symbol(:rate_recruit_, k)] = p.fertility[k] * exp(-p.natural_mortality)
+    end
+    for k in 1:(n - 1)
+        rates[Symbol(:rate_advance_, k)] = p.advance[k] * p.natural_mortality
+    end
+    for k in 1:n
+        rates[Symbol(:rate_retain_, k)] = p.retention[k] * p.natural_mortality
+        rates[Symbol(:rate_natural_, k)] =
+            max(0.0, 1.0 - p.advance[k] - p.retention[k]) * p.natural_mortality
+        rates[Symbol(:rate_harvest_, k)] = p.harvest_rate[k, yidx]
+    end
+    return rates
+end
+
+"""
+    simulate_ssa_jump(net::ReactionNetwork, t_end::Real; year_index::Int = 1,
+                      n_saves::Integer = 25, rng::AbstractRNG = Random.default_rng()
+                      ) -> SSAResult
+
+Simulate the reaction network with the **Gillespie SSA** using
+`JumpProcesses.SSAStepper` over a `JumpProblem` assembled from the Catalyst-compiled
+network.
+
+The network is converted to a `JumpProcesses` system, so the jumps are library objects and
+the combining, propensity evaluation and `SSAStepper` are `JumpProcesses`'. The
+state-dependent harvest rate is read at `year_index`, so `total_harvested` is the biomass
+removed in that year's harvest-rate regime.
+
+# Arguments
+- `net`: [`ReactionNetwork`](@ref).
+- `t_end`: simulation horizon, in the model's time units.
+- `year_index`: index into the harvest-rate schedule.
+- `n_saves`: number of recorded frames excluding the initial one.
+- `rng`: RNG for reproducibility.
+"""
+function simulate_ssa_jump(net::ReactionNetwork, t_end::Real;
+                           year_index::Int = 1, n_saves::Integer = 25,
+                           rng::AbstractRNG = Random.default_rng())
+    t_end > 0 || error("t_end must be positive, got $t_end.")
+    n_saves >= 1 || error("n_saves must be at least 1, got $n_saves.")
+
+    rs = catalyze(net)
+    u0 = catalyzed_u0(net)
+    rates = jump_parameters(net, year_index)
+
+    # Convert the Catalyst system into a JumpProcesses system. Species and reactions
+    # are taken from the compiled network, so the jump set mirrors the network exactly.
+    jsys = JumpSystem(rs)
+
+    prob = JumpProblem(jsys, u0, (0.0, t_end), rates)
+    sol = solve(prob, SSAStepper(rng); saveat = range(0.0, t_end, length = n_saves + 1))
+
+    counts = zeros(Float64, net.params.n_groups, n_saves + 1)
+    for (j, _) in enumerate(sol.t)
+        for i in 1:net.params.n_groups
+            counts[i, j] = sol[net.species[i]][j]
+        end
+    end
+    return SSAResult(collect(sol.t), counts,
+                     Tuple{Float64, Symbol, Int}[], 0.0)
+end
 
 """
     save_ensemble(zarr_dir, ensemble) -> zarr_dir
@@ -1285,3 +1470,6 @@ export save_ensemble, load_ensemble
 export AgentSpec, AgentPopulation, GroupAgent, agent_step!, model_step!
 export spawn_population, run_agent_projection, group_abundance
 export Reaction, ReactionNetwork, build_reaction_network, simulate_ssa, SSAResult
+export simulate_ssa_jump
+export Catalyst, JumpProcesses
+export catalyze, catalyzed_u0, jump_parameters

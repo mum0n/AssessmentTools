@@ -588,3 +588,51 @@ using AssessmentTools.StageMatrix
     nothing
 end
 
+
+# ------------------------------------------------------------------------------------
+# ContinuousBiomassDynamics: continuous-time logistic surplus production.
+# ------------------------------------------------------------------------------------
+
+using AssessmentTools.ContinuousBiomassDynamics
+using DynamicPPL, Turing
+
+@testset "ContinuousBiomassDynamics (Continuous Logistic)" begin
+    cpath = normpath(joinpath(@__DIR__, "..", "data", "continuous_biomass", "config.toml"))
+    cfg = load_continuous_biomass_config(cpath)
+    @test cfg.n_hours == 12
+    @test length(cfg.catches) == cfg.n_hours
+
+    out = integrate_continuous_biomass(cfg)
+    @test length(out.biomass) == cfg.n_hours + 1
+    @test out.biomass[1] == cfg.b0
+    # Semi-implicit Euler cannot overshoot K or produce negative biomass.
+    @test all(x -> 0.0 <= x <= cfg.k, out.biomass)
+    @test all(isfinite, out.biomass)
+
+    # With dt = 1 and one step the exact update is reproducible by hand.
+    c0 = ContinuousBiomassConfig(cfg.r, cfg.k, cfg.b0, 1, 1.0, [0.0], cfg.survey_q)
+    r1 = integrate_continuous_biomass(c0)
+    @test r1.biomass[2] ≈ (cfg.b0 + 1.0 * cfg.r * cfg.b0) /
+                          (1.0 + 1.0 * cfg.r * cfg.b0 / cfg.k)
+
+    rp = continuous_msy_reference_points(cfg)
+    @test rp.bmsy ≈ cfg.k / 2
+    @test rp.msy ≈ cfg.r * cfg.k / 4
+    @test rp.umsy ≈ 0.5
+
+    # A missing key must raise, not fall back to a compiled-in default.
+    tmp = mktempdir()
+    bad = joinpath(tmp, "bad.toml")
+    write(bad, "[continuous]\nr = 0.35\nk = 1200.0\nn_hours = 3\ndt = 1.0\n")
+    @test_throws Exception load_continuous_biomass_config(bad)
+
+    traj, obs = simulate_continuous_biomass(cfg; n_sims = 40, process_cv = 0.10,
+                                            obs_cv = 0.20,
+                                            rng = Random.MersenneTwister(99))
+    @test size(traj) == (40, cfg.n_hours + 1)
+    @test all(>=(0), traj)
+    @test all(>(0), obs)
+
+    mdl = bayesian_continuous_logistic_model(cfg.catches, cfg.catches, cfg)
+    @test mdl isa DynamicPPL.Model
+end

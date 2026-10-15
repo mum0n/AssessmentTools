@@ -1,0 +1,29 @@
+# Continuous-time logistic biomass dynamics.
+# Read by `AssessmentTools.ContinuousBiomassDynamics.load_continuous_biomass_config`.
+# Every key is required; a missing key raises rather than silently defaulting.
+#
+# The discrete and continuous logistic forms are the same model at different time
+# resolutions: the continuous ODE is
+#     dB/dt = r B (1 - B/K) - C(t)
+# and the discrete map in `AssessmentTools.BiomassDynamics` is this ODE stepped once per
+# year with forward Euler. The continuous form is preferred when removals enter at their
+# actual timing rather than aggregated to years.
+
+[continuous]
+# Intrinsic growth rate and carrying capacity, matching the discrete logistic example.
+r = 0.35
+k = 1200.0
+
+# Initial biomass, set near the carrying capacity.
+b0 = 1050.0
+
+# Number of projected steps, and the integration step size. `dt = 1.0` gives an annual
+# step identical to the discrete map; `dt < 1.0` resolves within-year timing.
+n_hours = 12
+dt = 1.0
+
+# Removals at each step. The length must equal `n_hours`.
+catches = [20.0, 24.0, 22.0, 26.0, 21.0, 23.0, 25.0, 22.0, 20.0, 24.0, 23.0, 21.0]
+
+# Survey catchability mapping biomass to relative index.
+survey_q = 0.0011
