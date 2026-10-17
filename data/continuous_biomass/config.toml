@@ -4,26 +4,30 @@
 #
 # The discrete and continuous logistic forms are the same model at different time
 # resolutions: the continuous ODE is
-#     dB/dt = r B (1 - B/K) - C(t)
-# and the discrete map in `AssessmentTools.BiomassDynamics` is this ODE stepped once per
-# year with forward Euler. The continuous form is preferred when removals enter at their
-# actual timing rather than aggregated to years.
+#     dB/dt = r B (1 - B/K) - Y(t)   or   dB/dt = r B (1 - B/K) - F(t) B
+# where Y(t) is instantaneous removal rate [mass · time⁻¹] and F(t) is instantaneous
+# fishing mortality [time⁻¹].
+#
+# Removals in `catches` specify the total interval catch mass C_t [mass] harvested
+# during interval [t, t + dt]. When dt != 1.0, the average removal rate is Y_t = C_t / dt
+# and the effective instantaneous fishing mortality is F_t = C_t / (B_t * dt).
 
 [continuous]
-# Intrinsic growth rate and carrying capacity, matching the discrete logistic example.
+# Intrinsic growth rate r [time⁻¹] and carrying capacity K [mass].
 r = 0.35
 k = 1200.0
 
-# Initial biomass, set near the carrying capacity.
+# Initial biomass b0 [mass], bounded by 0 <= b0 <= 2*k.
 b0 = 1050.0
 
-# Number of projected steps, and the integration step size. `dt = 1.0` gives an annual
-# step identical to the discrete map; `dt < 1.0` resolves within-year timing.
+# Number of projected steps, and the integration step duration dt [time].
+# `dt = 1.0` yields an annual step; `dt < 1.0` resolves within-year timing.
 n_hours = 12
 dt = 1.0
 
-# Removals at each step. The length must equal `n_hours`.
+# Total removal mass [mass] harvested over each interval of duration `dt`.
+# The length must equal `n_hours`. All entries must be non-negative.
 catches = [20.0, 24.0, 22.0, 26.0, 21.0, 23.0, 25.0, 22.0, 20.0, 24.0, 23.0, 21.0]
 
-# Survey catchability mapping biomass to relative index.
+# Survey catchability q mapping biomass to relative index [dimensionless].
 survey_q = 0.0011

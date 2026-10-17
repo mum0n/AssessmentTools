@@ -61,22 +61,35 @@ end
 
 """
     apply_tac_stabilizer(tac_target::Real, tac_prev::Real;
-                         max_decrease::Real = 0.15, max_increase::Real = 0.15) -> Float64
+                         max_decrease::Real = 0.15, max_increase::Real = 0.15,
+                         biomass::Union{Nothing, Real} = nothing,
+                         blim::Union{Nothing, Real} = nothing) -> Float64
 
-Constrain interannual TAC fluctuations to prevent severe socioeconomic volatility.
+Constrain interannual TAC fluctuations to prevent severe socioeconomic volatility, with
+an **emergency override** adhering to the Precautionary Approach:
 
 # Mathematical Formulation
 ```math
-\\mathrm{TAC}_t = \\max\\Big(\\mathrm{TAC}_{t-1}(1 - \\delta_{\\mathrm{dec}}), \\;
-                       \\min\\big(\\mathrm{TAC}_{t-1}(1 + \\delta_{\\mathrm{inc}}), \\;
-                                  \\mathrm{TAC}_{\\mathrm{target}}\\big)\\Big)
+\\mathrm{TAC}_t = \\begin{cases}
+\\min\\big(\\mathrm{TAC}_{t-1}(1 + \\delta_{\\mathrm{inc}}), \\; \\mathrm{TAC}_{\\mathrm{target}}\\big) & \\text{if } B_t < B_{\\mathrm{lim}} \\text{ (emergency override)} \\\\[6pt]
+\\max\\Big(\\mathrm{TAC}_{t-1}(1 - \\delta_{\\mathrm{dec}}), \\;
+           \\min\\big(\\mathrm{TAC}_{t-1}(1 + \\delta_{\\mathrm{inc}}), \\;
+                      \\mathrm{TAC}_{\\mathrm{target}}\\big)\\Big) & \\text{otherwise}
+\\end{cases}
 ```
+
+When a stock declines below the limit reference point (``B < B_{\\mathrm{lim}}``), capping downward
+quota adjustments at a fixed annual percentage perpetuates overfishing and delays rebuilding.
+The emergency override suspends the downward constraint (``\\delta_{\\mathrm{dec}}`` floor), allowing
+the quota to drop immediately to the target prescribed by the Harvest Control Rule.
 
 # Inputs
 - `tac_target`: Unconstrained TAC resulting directly from the HCR.
 - `tac_prev`: Catch or TAC realized in the preceding year.
 - `max_decrease`: Maximum proportional decrease allowed (e.g. 0.15 for -15%).
 - `max_increase`: Maximum proportional increase allowed (e.g. 0.15 for +15%).
+- `biomass`: Current perceived or estimated biomass ``B_t``.
+- `blim`: Limit reference point ``B_{\\mathrm{lim}}``. When `biomass < blim`, downward capping is suspended.
 
 # Outputs
 Constrained harvest recommendation.
@@ -85,12 +98,18 @@ function apply_tac_stabilizer(
     tac_target::Real,
     tac_prev::Real;
     max_decrease::Real = 0.15,
-    max_increase::Real = 0.15
+    max_increase::Real = 0.15,
+    biomass::Union{Nothing, Real} = nothing,
+    blim::Union{Nothing, Real} = nothing
 )
     if tac_prev <= 0.0
         return Float64(tac_target)
     end
-    lower_bound = tac_prev * (1.0 - max_decrease)
+
+    # Precautionary emergency override: when B < Blim, suspend downward constraint
+    override_decrease = !isnothing(biomass) && !isnothing(blim) && (biomass < blim)
+
+    lower_bound = override_decrease ? 0.0 : tac_prev * (1.0 - max_decrease)
     upper_bound = tac_prev * (1.0 + max_increase)
 
     if tac_target < lower_bound
@@ -121,25 +140,30 @@ struct MseResult
 end
 
 """
-    simulate_mse(years::AbstractVector{<:Integer}, hcr::HockeyStickHCR;
-                 r::Real = 0.35, k::Real = 100.0, b0::Real = 80.0,
-                 obs_cv::Real = 0.15, proc_cv::Real = 0.05,
-                 tac_constraint::Real = 0.15) -> MseResult
+    simulate_mse(years, hcr; rng = Random.default_rng(),
+                 r = 0.35, k = 100.0, b0 = 80.0,
+                 obs_cv = 0.15, proc_cv = 0.05,
+                 tac_constraint = 0.15,
+                 emergency_override = true) -> MseResult
 
 Deterministic/stochastic closed-loop Management Strategy Evaluation (MSE) simulation:
 - Simulates an underlying Schaefer operating model with process error.
 - Applies observation error to generate assessment biomass estimates ``\\hat{B}_t``.
 - Evaluates the Harvest Control Rule (HCR) and interannual TAC stabilizer.
+- If `emergency_override = true`, suspends downward TAC stabilization whenever
+  ``\\hat{B}_t < B_{\\mathrm{lim}}`` in compliance with the Precautionary Approach.
 - Feeds realized catch back into the population dynamics.
 """
 function simulate_mse(years::AbstractVector{<:Integer},
                       hcr::HockeyStickHCR;
+                      rng::Random.AbstractRNG = Random.default_rng(),
                       r::Real = 0.35,
                       k::Real = 100.0,
                       b0::Real = 80.0,
                       obs_cv::Real = 0.15,
                       proc_cv::Real = 0.05,
-                      tac_constraint::Real = 0.15)
+                      tac_constraint::Real = 0.15,
+                      emergency_override::Bool = true)
     ny = length(years)
     b_true = zeros(Float64, ny)
     b_obs = zeros(Float64, ny)
@@ -151,14 +175,16 @@ function simulate_mse(years::AbstractVector{<:Integer},
 
     for t in 1:ny
         # Observation process with assessment error
-        b_obs[t] = max(1e-4, b_true[t] * exp(randn() * obs_cv - 0.5 * obs_cv^2))
+        b_obs[t] = max(1e-4, b_true[t] * exp(randn(rng) * obs_cv - 0.5 * obs_cv^2))
 
         # Management procedure: HCR evaluation
         f_prescribed = eval_hcr(hcr, b_obs[t])
         unconstrained_tac = f_prescribed * b_obs[t]
         tac = apply_tac_stabilizer(unconstrained_tac, prev_tac;
                                    max_decrease = tac_constraint,
-                                   max_increase = tac_constraint)
+                                   max_increase = tac_constraint,
+                                   biomass = emergency_override ? b_obs[t] : nothing,
+                                   blim = emergency_override ? hcr.blim : nothing)
         prev_tac = tac
 
         # Implementation process: catch removal
@@ -169,7 +195,7 @@ function simulate_mse(years::AbstractVector{<:Integer},
         if t < ny
             # Operating model transition with process error
             p_t = r * b_true[t] * (1.0 - b_true[t] / k)
-            dev_p = exp(randn() * proc_cv - 0.5 * proc_cv^2)
+            dev_p = exp(randn(rng) * proc_cv - 0.5 * proc_cv^2)
             b_true[t + 1] = max(1e-4, (b_true[t] - catch_t + p_t) * dev_p)
         end
     end

@@ -17,18 +17,29 @@ their actual timing and the trajectory between removals is resolved.
 Aggregate biomass is governed by
 
 ```math
-\frac{dB}{dt} = r B \left(1 - \frac{B}{K}\right) - C(t)
+\frac{dB}{dt} = r B \left(1 - \frac{B}{K}\right) - Y(t) \quad \text{or} \quad \frac{dB}{dt} = r B \left(1 - \frac{B}{K}\right) - F(t) B
 ```
 
-with intrinsic growth rate `r`, carrying capacity `K`, and removal `C(t)`. Integration
-uses a semi-implicit Euler step,
+with intrinsic growth rate `r` [$\text{time}^{-1}$], carrying capacity `K` [mass],
+instantaneous removal rate `Y(t)` [$\text{mass}\cdot\text{time}^{-1}$], and instantaneous
+fishing mortality `F(t)` [$\text{time}^{-1}$].
+
+For an integration step duration $\Delta t$, the interval catch mass $C_t$ [mass] extracted
+over $[t, t + \Delta t]$ is $C_t = \bar{Y}_t \Delta t$. Integration uses semi-implicit Euler,
 
 ```math
 B_{t+1} = \frac{B_t + \Delta t\, r B_t - C_t}{1 + \Delta t\, r B_t / K},
 ```
 
-which is the **exact** solution of the logistic ODE when `C` is held constant over the
-step.
+which is the **exact** solution of the logistic ODE when removal rate $\bar{Y}_t = C_t / \Delta t$
+is held constant over the step.
+
+### Dimensional Distinction and Parameter Specifications
+
+- `catches`: interval removal mass $C_t$ [mass], **not** an instantaneous rate. When
+  $\Delta t \ne 1.0$, passing an instantaneous rate causes a $1/\Delta t$ dimensional error.
+- Instantaneous removal rate: $\bar{Y}_t = C_t / \Delta t$ [$\text{mass}\cdot\text{time}^{-1}$].
+- Instantaneous fishing mortality: $F_t = C_t / (B_t \, \Delta t)$ [$\text{time}^{-1}$].
 
 ### Relationship to the discrete model
 
@@ -38,9 +49,9 @@ The discrete map in `AssessmentTools.BiomassDynamics`,
 B_{t+1} = \max(0, B_t + r B_t (1 - B_t/K) - C_t),
 ```
 
-is this ODE integrated with **forward Euler** over a unit step. The two are the same
-model at different time resolutions. Forward Euler is not exact and overshoots `K` when
-`r Δt` is large, which is why the semi-implicit form is used here.
+is this ODE integrated with **forward Euler** over a unit step ($\Delta t = 1.0$).
+The two are the same model at different time resolutions. Forward Euler is not exact and
+overshoots `K` when `r Δt` is large, which is why the semi-implicit form is used here.
 
 ### Assumptions
 
@@ -114,17 +125,32 @@ end
 
 # ╔═╡ 30000007-0000-0000-0000-000000000007
 md"""
-## 3. Reference Points
+## 3. Biological Reference Points
 
-Equilibrium reference points where `dB/dt = 0`.
+Biological reference points correspond to the stationary production equilibrium where $\frac{dB}{dt} = 0$:
+
+```math
+\begin{aligned}
+B_{\text{MSY}} &= \frac{K}{2} \\
+\text{MSY} &= \frac{r K}{4} \\
+F_{\text{MSY}} &= \frac{r}{2} \\
+U_{\text{MSY}} &= 1 - \exp(-F_{\text{MSY}}) = 1 - \exp\left(-\frac{r}{2}\right)
+\end{aligned}
+```
+
+The instantaneous harvest rate $F_{\text{MSY}} = r/2$ reflects continuous production. The discrete annual exploitation rate $U_{\text{MSY}} = 1 - \exp(-F_{\text{MSY}})$ accounts for non-linear stock depletion across the annual integration cycle.
 """
 
 # ╔═╡ 30000008-0000-0000-0000-000000000008
 begin
     rp = continuous_msy_reference_points(cfg)
-    (B_MSY = round(rp.bmsy, digits = 2),
-     MSY = round(rp.msy, digits = 2),
-     U_MSY = rp.umsy)
+    (
+        B_MSY = round(rp.bmsy, digits = 2),
+        MSY = round(rp.msy, digits = 2),
+        instantaneous_F_MSY = round(cfg.r / 2.0, digits = 4),
+        annual_U_MSY = round(1.0 - exp(-cfg.r / 2.0), digits = 4),
+        U_MSY_nominal = rp.umsy
+    )
 end
 
 # ╔═╡ 30000009-0000-0000-0000-000000000009

@@ -53,6 +53,8 @@ end
                           terminal_f::AbstractVector{<:Real},
                           plus_group_f::Union{Nothing, Real, AbstractVector{<:Real}} = nothing,
                           plus_group_age::Integer = size(catches, 1),
+                          gamma::Union{Nothing, Real} = nothing,
+                          preceding_ages_count::Integer = 2,
                           weight_at_age = nothing,
                           maturity = nothing) -> VpaResult
 
@@ -67,8 +69,16 @@ N_{a,t} = N_{a+1, t+1} \\exp(M_{a,t}) + C_{a,t} \\exp\\left(\\frac{M_{a,t}}{2}\\
 - `M`: Instantaneous natural mortality (scalar, vector per age, or matrix `nages × nyears`).
 - `terminal_f`: Vector of terminal year fishing mortalities across ages (length `nages`).
 - `plus_group_f`: Fishing mortality assumed for the oldest age class across years.
-  If `nothing`, defaults to terminal F of the plus group.
+  If `nothing`, defaults to terminal F of the plus group when `gamma` is not specified.
 - `plus_group_age`: Row index designating the plus-group (defaults to `nages`).
+- `gamma`: Ratio parameter scaling plus-group mortality relative to fully-recruited preceding
+  ages (NAFO/ICES standard adult ratio protocol):
+  ```math
+  F_{A, t} = \\gamma \\cdot \\bar{F}_{A-k : A-1, \\; t}
+  ```
+  When specified, replaces constant historical plus-group mortality assumptions.
+- `preceding_ages_count`: Number of preceding age classes `k` averaged in the adult ratio
+  formulation (defaults to 2: ages `A-2` and `A-1`).
 - `weight_at_age`: Optional weight at age; enables proper spawning biomass in `vpa.biomass_ssb`.
 - `maturity`: Optional maturity (spawning fraction) at age; enables proper SSB.
 """
@@ -76,6 +86,8 @@ function popes_cohort_analysis(catches::AbstractMatrix{<:Real}, M;
                                terminal_f::AbstractVector{<:Real},
                                plus_group_f::Union{Nothing, Real, AbstractVector{<:Real}} = nothing,
                                plus_group_age::Integer = size(catches, 1),
+                               gamma::Union{Nothing, Real} = nothing,
+                               preceding_ages_count::Integer = 2,
                                weight_at_age::Union{Nothing, AbstractVector{<:Real}} = nothing,
                                maturity::Union{Nothing, AbstractVector{<:Real}} = nothing)
     na, ny = size(catches)
@@ -114,36 +126,67 @@ function popes_cohort_analysis(catches::AbstractMatrix{<:Real}, M;
         end
     end
 
-    # Initialize plus-group F and N across all years
-    f_plus = if isnothing(plus_group_f)
-        fill(terminal_f[plus_group_age], ny)
-    elseif isa(plus_group_f, Real)
-        fill(Float64(plus_group_f), ny)
-    else
-        collect(Float64.(plus_group_f))
-    end
+    # Initialize plus-group F if static schedule provided and gamma is not set
+    if isnothing(gamma)
+        f_plus = if isnothing(plus_group_f)
+            fill(terminal_f[plus_group_age], ny)
+        elseif isa(plus_group_f, Real)
+            fill(Float64(plus_group_f), ny)
+        else
+            collect(Float64.(plus_group_f))
+        end
 
-    for t in 1:(ny - 1)
-        F[plus_group_age, t] = f_plus[t]
-        fa = f_plus[t]
-        ma = M_mat[plus_group_age, t]
-        za = fa + ma
-        if fa > 0.0
-            N[plus_group_age, t] = catches[plus_group_age, t] / ((fa / za) * (1.0 - exp(-za)))
+        for t in 1:(ny - 1)
+            F[plus_group_age, t] = f_plus[t]
+            fa = f_plus[t]
+            ma = M_mat[plus_group_age, t]
+            za = fa + ma
+            if fa > 0.0
+                N[plus_group_age, t] = catches[plus_group_age, t] / ((fa / za) * (1.0 - exp(-za)))
+            end
         end
     end
 
     # Backward recursion via Pope's approximation
-    for a in reverse(1:(plus_group_age - 1))
+    # When gamma is supplied, we step backward year-by-year across cohorts, calculating
+    # the preceding ages first, then computing F_{A, t} = gamma * mean(F_{A-k : A-1, t}).
+    if !isnothing(gamma)
+        gamma_val = Float64(gamma)
+        k_ages = max(1, Int(preceding_ages_count))
         for t in reverse(1:(ny - 1))
-            m_at = M_mat[a, t]
-            N[a, t] = N[a + 1, t + 1] * exp(m_at) + catches[a, t] * exp(0.5 * m_at)
+            for a in reverse(1:(plus_group_age - 1))
+                m_at = M_mat[a, t]
+                N[a, t] = N[a + 1, t + 1] * exp(m_at) + catches[a, t] * exp(0.5 * m_at)
+                if N[a, t] > 0.0 && N[a + 1, t + 1] > 0.0
+                    F[a, t] = max(0.0, log(N[a, t] / N[a + 1, t + 1]) - m_at)
+                else
+                    F[a, t] = 0.0
+                end
+            end
+            # Compute adult ratio plus-group mortality for year t
+            ref_start = max(1, plus_group_age - k_ages)
+            ref_end = plus_group_age - 1
+            f_ref = mean(F[ref_start:ref_end, t])
+            f_plus_t = gamma_val * f_ref
+            F[plus_group_age, t] = f_plus_t
+            ma_plus = M_mat[plus_group_age, t]
+            za_plus = f_plus_t + ma_plus
+            if f_plus_t > 0.0
+                N[plus_group_age, t] = catches[plus_group_age, t] / ((f_plus_t / za_plus) * (1.0 - exp(-za_plus)))
+            end
+        end
+    else
+        for a in reverse(1:(plus_group_age - 1))
+            for t in reverse(1:(ny - 1))
+                m_at = M_mat[a, t]
+                N[a, t] = N[a + 1, t + 1] * exp(m_at) + catches[a, t] * exp(0.5 * m_at)
 
-            # Compute realized F from survival ratio
-            if N[a, t] > 0.0 && N[a + 1, t + 1] > 0.0
-                F[a, t] = max(0.0, log(N[a, t] / N[a + 1, t + 1]) - m_at)
-            else
-                F[a, t] = 0.0
+                # Compute realized F from survival ratio
+                if N[a, t] > 0.0 && N[a + 1, t + 1] > 0.0
+                    F[a, t] = max(0.0, log(N[a, t] / N[a + 1, t + 1]) - m_at)
+                else
+                    F[a, t] = 0.0
+                end
             end
         end
     end
@@ -509,6 +552,8 @@ end
                  terminal_f::AbstractVector{<:Real},
                  tol::Real = 1e-8,
                  plus_group_age::Integer = size(catches, 1),
+                 gamma::Union{Nothing, Real} = nothing,
+                 preceding_ages_count::Integer = 2,
                  weight_at_age = nothing,
                  maturity = nothing) -> VpaResult
 
@@ -521,6 +566,12 @@ derivative has to be maintained at this site.
 \\frac{C_{a,t}}{N_{a+1,t+1}} = \\frac{F_{a,t}}{F_{a,t} + M_{a,t}} \\frac{1 - \\exp(-(F_{a,t} + M_{a,t}))}{\\exp(-(F_{a,t} + M_{a,t}))}
 ```
 
+When `gamma` is provided, plus-group mortality across historical years is scaled to
+the fully-recruited preceding ages (NAFO/ICES standard adult ratio protocol):
+```math
+F_{A, t} = \\gamma \\cdot \\bar{F}_{A-k : A-1, \\; t}
+```
+
 `tol` is the root tolerance. `weight_at_age` and `maturity` are optional and enable a
 proper spawning biomass in `vpa.biomass_ssb`; see [`popes_cohort_analysis`](@ref).
 """
@@ -528,6 +579,8 @@ function standard_vpa(catches::AbstractMatrix{<:Real}, M;
                       terminal_f::AbstractVector{<:Real},
                       tol::Real = 1.0e-8,
                       plus_group_age::Integer = size(catches, 1),
+                      gamma::Union{Nothing, Real} = nothing,
+                      preceding_ages_count::Integer = 2,
                       weight_at_age::Union{Nothing, AbstractVector{<:Real}} = nothing,
                       maturity::Union{Nothing, AbstractVector{<:Real}} = nothing)
     na, ny = size(catches)
@@ -557,50 +610,91 @@ function standard_vpa(catches::AbstractMatrix{<:Real}, M;
         end
     end
 
-    # Oldest age class (plus-group) assumption across historical years: F_{na, t} = terminal_f[na]
-    for t in 1:(ny - 1)
-        F[na, t] = terminal_f[na]
-        fa = terminal_f[na]
-        za = fa + M_mat[na, t]
-        if fa > 0.0
-            N[na, t] = catches[na, t] / ((fa / za) * (1.0 - exp(-za)))
+    # If gamma is not set, use constant historical plus-group assumption
+    if isnothing(gamma)
+        for t in 1:(ny - 1)
+            F[plus_group_age, t] = terminal_f[plus_group_age]
+            fa = terminal_f[plus_group_age]
+            za = fa + M_mat[plus_group_age, t]
+            if fa > 0.0
+                N[plus_group_age, t] = catches[plus_group_age, t] / ((fa / za) * (1.0 - exp(-za)))
+            end
         end
-    end
 
-    # Backward recursion across cohorts
-    for a in reverse(1:(na - 1))
-        for t in reverse(1:(ny - 1))
-            n_next = N[a + 1, t + 1]
-            c_val = catches[a, t]
-            m_val = M_mat[a, t]
+        for a in reverse(1:(plus_group_age - 1))
+            for t in reverse(1:(ny - 1))
+                n_next = N[a + 1, t + 1]
+                c_val = catches[a, t]
+                m_val = M_mat[a, t]
 
-            if n_next <= 0.0 || c_val <= 0.0
-                N[a, t] = 0.0
-                F[a, t] = 0.0
-                continue
-            end
-
-            # Target ratio: C / N_{t+1}
-            target_ratio = c_val / n_next
-
-            # Initial guess via Pope's approximation, then solve the exact Baranov
-            # catch equation for F with the package's shared scalar root solver.
-            f_guess = log((n_next * exp(m_val) + c_val * exp(0.5 * m_val)) / n_next) - m_val
-
-            # Residual: (F/Z)(1 - exp(-Z))/exp(-Z) - target, zero at the answer.
-            residual = let mv = m_val, tr = target_ratio
-                f -> begin
-                    z = f + mv
-                    ez = exp(-z)
-                    return (f / z) * ((1.0 - ez) / ez) - tr
+                if n_next <= 0.0 || c_val <= 0.0
+                    N[a, t] = 0.0
+                    F[a, t] = 0.0
+                    continue
                 end
-            end
-            f_cur = Solvers.solve_scalar_root(residual, max(0.01, f_guess);
-                                               lower = 0.0, upper = 20.0, tol = tol)
 
-            F[a, t] = f_cur
-            z_final = f_cur + m_val
-            N[a, t] = catches[a, t] / ((f_cur / z_final) * (1.0 - exp(-z_final)))
+                target_ratio = c_val / n_next
+                f_guess = log((n_next * exp(m_val) + c_val * exp(0.5 * m_val)) / n_next) - m_val
+
+                residual = let mv = m_val, tr = target_ratio
+                    f -> begin
+                        z = f + mv
+                        ez = exp(-z)
+                        return (f / z) * ((1.0 - ez) / ez) - tr
+                    end
+                end
+                f_cur = Solvers.solve_scalar_root(residual, max(0.01, f_guess);
+                                                   lower = 0.0, upper = 20.0, tol = tol)
+
+                F[a, t] = f_cur
+                z_final = f_cur + m_val
+                N[a, t] = catches[a, t] / ((f_cur / z_final) * (1.0 - exp(-z_final)))
+            end
+        end
+    else
+        gamma_val = Float64(gamma)
+        k_ages = max(1, Int(preceding_ages_count))
+        for t in reverse(1:(ny - 1))
+            for a in reverse(1:(plus_group_age - 1))
+                n_next = N[a + 1, t + 1]
+                c_val = catches[a, t]
+                m_val = M_mat[a, t]
+
+                if n_next <= 0.0 || c_val <= 0.0
+                    N[a, t] = 0.0
+                    F[a, t] = 0.0
+                    continue
+                end
+
+                target_ratio = c_val / n_next
+                f_guess = log((n_next * exp(m_val) + c_val * exp(0.5 * m_val)) / n_next) - m_val
+
+                residual = let mv = m_val, tr = target_ratio
+                    f -> begin
+                        z = f + mv
+                        ez = exp(-z)
+                        return (f / z) * ((1.0 - ez) / ez) - tr
+                    end
+                end
+                f_cur = Solvers.solve_scalar_root(residual, max(0.01, f_guess);
+                                                   lower = 0.0, upper = 20.0, tol = tol)
+
+                F[a, t] = f_cur
+                z_final = f_cur + m_val
+                N[a, t] = catches[a, t] / ((f_cur / z_final) * (1.0 - exp(-z_final)))
+            end
+
+            # Adult ratio plus-group calculation for year t
+            ref_start = max(1, plus_group_age - k_ages)
+            ref_end = plus_group_age - 1
+            f_ref = mean(F[ref_start:ref_end, t])
+            f_plus_t = gamma_val * f_ref
+            F[plus_group_age, t] = f_plus_t
+            ma_plus = M_mat[plus_group_age, t]
+            za_plus = f_plus_t + ma_plus
+            if f_plus_t > 0.0
+                N[plus_group_age, t] = catches[plus_group_age, t] / ((f_plus_t / za_plus) * (1.0 - exp(-za_plus)))
+            end
         end
     end
 

@@ -35,21 +35,47 @@ Bayesian state-space formulation of the statistical catch-at-age forward model:
     L = model.layout
     tc = model.control.theta_control
 
-    # Priors on leading parameters θ
+    # Priors on leading parameters θ from model.control.theta_control
+    # Columns of theta_control: [initial, lower, upper, phase, prior_type, p1, p2]
+    # Prior types:
+    # 0 = Uniform(lower, upper)
+    # 1 = Normal(p1, p2)
+    # 2 = LogNormal(p1, p2)
+    # 3 = Beta(p1, p2) scaled to [lower, upper] via LocationScale
+    # 4 = Gamma(p1, p2)
     # θ[1]: log(R0)
-    log_ro ~ Normal(tc[1, 1], prior_log_ro_sd)
+    log_ro ~ tc[1, 5] == 1.0 ? Normal(tc[1, 6], tc[1, 7]) :
+             tc[1, 5] == 2.0 ? LogNormal(tc[1, 6], tc[1, 7]) :
+             tc[1, 5] == 4.0 ? Gamma(tc[1, 6], tc[1, 7]) :
+             Uniform(tc[1, 2], tc[1, 3])
+
     # θ[2]: steepness h
-    h ~ truncated(Normal(tc[2, 1], prior_h_sd), tc[2, 2], tc[2, 3])
-    # θ[3]: natural mortality M
-    m_nat ~ truncated(Normal(tc[3, 1], prior_m_sd), tc[3, 2], tc[3, 3])
+    h ~ tc[2, 5] == 3.0 ? LocationScale(tc[2, 2], tc[2, 3] - tc[2, 2], Beta(tc[2, 6], tc[2, 7])) :
+        tc[2, 5] == 1.0 ? truncated(Normal(tc[2, 6], tc[2, 7]), tc[2, 2], tc[2, 3]) :
+        Uniform(tc[2, 2], tc[2, 3])
+
+    # θ[3]: natural mortality M (log M in parameter layout, exposed as m_nat)
+    m_nat ~ tc[3, 5] == 1.0 ? Normal(tc[3, 6], tc[3, 7]) :
+            tc[3, 5] == 2.0 ? LogNormal(tc[3, 6], tc[3, 7]) :
+            Uniform(tc[3, 2], tc[3, 3])
+
     # θ[4]: log(R_bar)
-    log_rbar ~ Normal(tc[4, 1], prior_log_ro_sd)
+    log_rbar ~ tc[4, 5] == 1.0 ? Normal(tc[4, 6], tc[4, 7]) :
+               Uniform(tc[4, 2], tc[4, 3])
+
     # θ[5]: log(R_init)
-    log_rinit ~ Normal(tc[5, 1], prior_log_ro_sd)
+    log_rinit ~ tc[5, 5] == 1.0 ? Normal(tc[5, 6], tc[5, 7]) :
+                Uniform(tc[5, 2], tc[5, 3])
+
     # θ[6]: rho (variance partition)
-    rho ~ truncated(Normal(tc[6, 1], 0.20), tc[6, 2], tc[6, 3])
+    rho ~ tc[6, 5] == 3.0 ? LocationScale(tc[6, 2], tc[6, 3] - tc[6, 2], Beta(tc[6, 6], tc[6, 7])) :
+          tc[6, 5] == 1.0 ? truncated(Normal(tc[6, 6], tc[6, 7]), tc[6, 2], tc[6, 3]) :
+          Uniform(tc[6, 2], tc[6, 3])
+
     # θ[7]: varphi (total precision)
-    varphi ~ truncated(Normal(tc[7, 1], 0.50), tc[7, 2], tc[7, 3])
+    varphi ~ tc[7, 5] == 4.0 ? Gamma(tc[7, 6], tc[7, 7]) :
+             tc[7, 5] == 1.0 ? Normal(tc[7, 6], tc[7, 7]) :
+             Uniform(tc[7, 2], tc[7, 3])
 
     theta = [log_ro, h, m_nat, log_rbar, log_rinit, rho, varphi]
 
@@ -63,8 +89,8 @@ Bayesian state-space formulation of the statistical catch-at-age forward model:
             sel_pars[k] = zeros(Float64, r, c)
         else
             p_mat = zeros(Float64, r, c)
-            for i in 1:r
-                for j in 1:c
+            for j in 1:c
+                for i in 1:r
                     p_mat[i, j] ~ Normal(0.0, 2.0)
                 end
             end
@@ -99,21 +125,16 @@ Bayesian state-space formulation of the statistical catch-at-age forward model:
         m_nodes[i] ~ Normal(0.0, 0.5)
     end
 
-    # Assemble full parameter vector x for forward model
-    x = zeros(Float64, L.n)
-    x[L.theta.range] .= theta
-    for (k, b) in enumerate(L.sel_par)
-        r, c = b.dims
-        if c > 0
-            x[b.range] .= vec(permutedims(sel_pars[k]))
-        end
-    end
-    x[L.log_ft_pars.range] .= log_ft
-    x[L.init_log_rec_devs.range] .= init_rdevs
-    x[L.log_rec_devs.range] .= rdevs
-    if n_mnod > 0
-        x[L.log_m_nodes.range] .= m_nodes
-    end
+    # Assemble full parameter vector x via assemble_x
+    parts = (
+        theta = theta,
+        sel_par = sel_pars,
+        log_ft_pars = log_ft,
+        init_log_rec_devs = init_rdevs,
+        log_rec_devs = rdevs,
+        log_m_nodes = m_nodes
+    )
+    x = assemble_x(L, parts)
 
     # Evaluate integrated forward population dynamics
     ctx = PhaseContext(L.max_phase, true)

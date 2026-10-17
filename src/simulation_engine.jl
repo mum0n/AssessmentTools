@@ -1095,29 +1095,46 @@ function _catalyst_system(n::Int)
     # inside a `quote` block, and hand-building the right AST is the fragile step; text
     # plus `Meta.parse` avoids it entirely. Evaluation happens in Catalyst's own module
     # so the resulting `ReactionSystem` is a Catalyst object with Catalyst-owned symbols.
+    rec_names = [Symbol("rate_recruit_", k) for k in 1:n]
+    adv_names = [Symbol("rate_advance_", k) for k in 1:(n - 1)]
+    nat_names = [Symbol("rate_natural_", k) for k in 1:n]
+    har_names = [Symbol("rate_harvest_", k) for k in 1:n]
+    sp_names  = [Symbol("x_", k) for k in 1:n]
+
+    rec_names_str = repr(rec_names)
+    adv_names_str = repr(adv_names)
+    nat_names_str = repr(nat_names)
+    har_names_str = repr(har_names)
+    sp_names_str  = repr(sp_names)
+
     source = """
     using Catalyst
-    nn = $(n)
-    using ModelingToolkitBase
-    @variables t
-    Catalyst.@parameters rate_recruit_[1:nn] rate_advance_[1:(nn-1)] rate_retain_[1:nn] rate_natural_[1:nn] rate_harvest_[1:nn]
-    Catalyst.@species x_(t)[1:nn]
-    xs_vec = [x_[k] for k in 1:nn]
-    rec = [rate_recruit_[k] for k in 1:nn]
-    adv = [rate_advance_[k] for k in 1:(nn - 1)]
-    ret = [rate_retain_[k] for k in 1:nn]
-    nat = [rate_natural_[k] for k in 1:nn]
-    har = [rate_harvest_[k] for k in 1:nn]
-    rxns = Any[Catalyst.Reaction(sum(rec[k] * xs_vec[k] for k in 1:nn), [], [xs_vec[1]]; name = :recruit)]
-    for k in 1:(nn - 1)
-        push!(rxns, Catalyst.Reaction(adv[k] * xs_vec[k], [xs_vec[k]], [xs_vec[k + 1]]; name = Symbol(:advance_, k)))
+    @independent_variables t
+    rec_syms = $(rec_names_str)
+    adv_syms = $(adv_names_str)
+    nat_syms = $(nat_names_str)
+    har_syms = $(har_names_str)
+    sp_syms  = $(sp_names_str)
+
+    rec = [first(Catalyst.@parameters(\$(rec_syms[k]))) for k in 1:$n]
+    adv = [first(Catalyst.@parameters(\$(adv_syms[k]))) for k in 1:$(n - 1)]
+    nat = [first(Catalyst.@parameters(\$(nat_syms[k]))) for k in 1:$n]
+    har = [first(Catalyst.@parameters(\$(har_syms[k]))) for k in 1:$n]
+    xs = [first(Catalyst.@species(\$(sp_syms[k])(t))) for k in 1:$n]
+
+    rxns = Any[]
+    push!(rxns, Catalyst.Reaction(rec[1], [xs[1]], [xs[1]], [1], [2]; name = :recruit_1))
+    for k in 2:$n
+        push!(rxns, Catalyst.Reaction(rec[k], [xs[k]], [xs[k], xs[1]], [1], [1, 1]; name = Symbol(:recruit_, k)))
     end
-    for k in 1:nn
-        push!(rxns, Catalyst.Reaction(ret[k] * xs_vec[k], [xs_vec[k]], [xs_vec[k]]; name = Symbol(:retain_, k)))
-        push!(rxns, Catalyst.Reaction(nat[k] * xs_vec[k], [xs_vec[k]], []; name = Symbol(:natural_, k)))
-        push!(rxns, Catalyst.Reaction(har[k] * xs_vec[k], [xs_vec[k]], []; name = Symbol(:harvest_, k)))
+    for k in 1:$(n - 1)
+        push!(rxns, Catalyst.Reaction(adv[k], [xs[k]], [xs[k + 1]]; name = Symbol(:advance_, k)))
     end
-    Catalyst.ReactionSystem(rxns, t, xs_vec, vcat(rec, adv, ret, nat, har); name = Symbol(:rn_, nn))
+    for k in 1:$n
+        push!(rxns, Catalyst.Reaction(nat[k], [xs[k]], []; name = Symbol(:natural_, k)))
+        push!(rxns, Catalyst.Reaction(har[k], [xs[k]], []; name = Symbol(:harvest_, k)))
+    end
+    Catalyst.complete(Catalyst.ReactionSystem(rxns, t, xs, vcat(rec, adv, nat, har); name = Symbol(:rn_, $n)))
     """
 
     rs = Core.eval(Catalyst, Meta.parseall(source))
@@ -1127,44 +1144,47 @@ function _catalyst_system(n::Int)
 end
 
 """
-    catalyzed_u0(net::ReactionNetwork) -> Dict{Symbol, Float64}
+    catalyzed_u0(rs::ReactionSystem, net::ReactionNetwork) -> Dict
 
-Initial species-count mapping for [`catalyze`](@ref).
+Initial species-count mapping for the compiled Catalyst [`ReactionSystem`](@ref).
 """
-catalyzed_u0(net::ReactionNetwork) =
-    Dict(net.species[i] => net.initial_counts[i] for i in eachindex(net.species))
+function catalyzed_u0(rs::ReactionSystem, net::ReactionNetwork)
+    sps = species(rs)
+    length(sps) == length(net.initial_counts) ||
+        error("Species count mismatch between Catalyst ReactionSystem and ReactionNetwork.")
+    return Dict(sps[i] => Float64(net.initial_counts[i]) for i in eachindex(sps))
+end
 
 """
-    jump_parameters(net::ReactionNetwork, year_index::Int = 1) -> Dict{Symbol, Float64}
+    jump_parameters(rs::ReactionSystem, net::ReactionNetwork, year_index::Int = 1) -> Dict
 
-The rate parameters implied by the network topology, read from the model parameters at
-`year_index`.
-
-# Arguments
-- `net`: reaction network.
-- `year_index`: 1-based index into the harvest-rate schedule; the harvest rates are time
-  dependent, so a multi-year simulation rebuilds the parameters per year rather than
-  relying on rates that change within one `(0, t_end)` interval.
+The rate parameters implied by the network topology, mapped to Catalyst parameter symbols.
 """
-function jump_parameters(net::ReactionNetwork, year_index::Int = 1)
+function jump_parameters(rs::ReactionSystem, net::ReactionNetwork, year_index::Int = 1)
     n = net.params.n_groups
     ny = size(net.params.harvest_rate, 2)
     yidx = ((year_index - 1) % ny) + 1
     p = net.params
-    rates = Dict{Symbol, Float64}()
+
+    sym_rates = Dict{Symbol, Float64}()
     for k in 1:n
-        # Fertility in the Lefkovitch convention is per surviving individual, and the
-        # closed form scales the product by e^{-M}; the same factor applies here.
-        rates[Symbol(:rate_recruit_, k)] = p.fertility[k] * exp(-p.natural_mortality)
+        sym_rates[Symbol(:rate_recruit_, k)] = p.fertility[k] * exp(-p.natural_mortality)
     end
     for k in 1:(n - 1)
-        rates[Symbol(:rate_advance_, k)] = p.advance[k] * p.natural_mortality
+        sym_rates[Symbol(:rate_advance_, k)] = p.advance[k] * p.natural_mortality
     end
     for k in 1:n
-        rates[Symbol(:rate_retain_, k)] = p.retention[k] * p.natural_mortality
-        rates[Symbol(:rate_natural_, k)] =
+        sym_rates[Symbol(:rate_natural_, k)] =
             max(0.0, 1.0 - p.advance[k] - p.retention[k]) * p.natural_mortality
-        rates[Symbol(:rate_harvest_, k)] = p.harvest_rate[k, yidx]
+        sym_rates[Symbol(:rate_harvest_, k)] = p.harvest_rate[k, yidx]
+    end
+
+    rates = Dict{Any, Float64}()
+    for param in parameters(rs)
+        psym = Symbol(param)
+        if haskey(sym_rates, psym)
+            rates[param] = sym_rates[psym]
+        end
     end
     return rates
 end
@@ -1197,20 +1217,20 @@ function simulate_ssa_jump(net::ReactionNetwork, t_end::Real;
     n_saves >= 1 || error("n_saves must be at least 1, got $n_saves.")
 
     rs = catalyze(net)
-    u0 = catalyzed_u0(net)
-    rates = jump_parameters(net, year_index)
+    u0 = catalyzed_u0(rs, net)
+    rates = jump_parameters(rs, net, year_index)
 
-    # Convert the Catalyst system into a JumpProcesses system. Species and reactions
-    # are taken from the compiled network, so the jump set mirrors the network exactly.
-    jsys = JumpSystem(rs)
+    # Assemble JumpProblem directly from the Catalyst ReactionSystem. Catalyst integrates
+    # with JumpProcesses so that JumpProblem converts the ReactionSystem into discrete jumps.
+    prob = JumpProblem(rs, u0, (0.0, t_end), rates; rng = rng)
+    sol = solve(prob, SSAStepper(); saveat = range(0.0, t_end, length = n_saves + 1))
 
-    prob = JumpProblem(jsys, u0, (0.0, t_end), rates)
-    sol = solve(prob, SSAStepper(rng); saveat = range(0.0, t_end, length = n_saves + 1))
-
-    counts = zeros(Float64, net.params.n_groups, n_saves + 1)
+    n_t = length(sol.t)
+    counts = zeros(Float64, net.params.n_groups, n_t)
+    sps = species(rs)
     for (j, _) in enumerate(sol.t)
         for i in 1:net.params.n_groups
-            counts[i, j] = sol[net.species[i]][j]
+            counts[i, j] = sol[sps[i]][j]
         end
     end
     return SSAResult(collect(sol.t), counts,

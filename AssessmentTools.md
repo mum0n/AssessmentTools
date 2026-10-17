@@ -202,25 +202,69 @@ Bayesian state-space discrete Schaefer surplus production model in `Turing.jl`:
 
 ---
 
+## 3B. ContinuousBiomassDynamics Submodule
+
+Continuous-time logistic biomass dynamics with exact semi-implicit integration and sub-annual removal scheduling.
+
+### 3B.1 Continuous Surplus Production ODE
+Aggregate stock biomass evolves continuously according to:
+```math
+\frac{dB}{dt} = r B(t) \left(1 - \frac{B(t)}{K}\right) - C(t)
+```
+where $r$ is the intrinsic population growth rate, $K$ is the environmental carrying capacity, and $C(t)$ represents removals per unit time.
+
+### 3B.2 Semi-Implicit (Exponential) Euler Discretization
+To prevent numerical stiffness and spurious negative biomass produced by forward Euler when $r \Delta t$ is large, the continuous ODE is integrated using the semi-implicit Euler update:
+```math
+B_{t+1} = \frac{B_t + \Delta t \, r B_t - C_t}{1 + \Delta t \, r B_t / K}
+```
+with an analytical non-negative floor $B_{t+1} = \max(0, B_{t+1})$. This scheme represents the exact discrete recurrence relation for the logistic differential equation when removals are held constant across time step $\Delta t$.
+
+### 3B.3 Continuous MSY Reference Points
+At stationary equilibrium ($\frac{dB}{dt} = 0$):
+```math
+B_{\text{MSY}} = \frac{K}{2}, \quad \text{MSY} = \frac{r K}{4}, \quad F_{\text{MSY}} = \frac{r}{2}, \quad U_{\text{MSY}} = 1 - \exp\left(-\frac{r}{2}\right)
+```
+
+### 3B.4 Bayesian State-Space Formulation
+Latent biomass is tracked continuously with proportional lognormal or normal process deviations scaling with stock size:
+```math
+\begin{aligned}
+K &\sim \mathrm{TruncatedNormal}(\mu_K, \sigma_K, K_{\text{low}}, f_K \mu_K) \\
+r &\sim \mathrm{TruncatedNormal}(\mu_r, \sigma_r, r_{\text{low}}, r_{\text{up}}) \\
+q &\sim \mathrm{TruncatedNormal}(\mu_q, \sigma_q, 0.01, 10.0) \\
+B_{t+1} &\sim \mathcal{N}\left(\frac{B_t + \Delta t \, r B_t - C_t}{1 + \Delta t \, r B_t / K}, \; \sigma_p^2 B_t^2\right) \\
+I_t &\sim \mathrm{LogNormal}\left(\log(q B_t), \; \sigma_o^2\right)
+\end{aligned}
+```
+
+---
+
 ## 4. CohortAnalysis Submodule
 
 Historical cohort back-calculation and Virtual Population Analysis.
 
 ### 4.1 Pope's Cohort Analysis
 
-`popes_cohort_analysis(catches, M; terminal_f, plus_group_f, plus_group_age) -> VpaResult`
+`popes_cohort_analysis(catches, M; terminal_f, plus_group_f, plus_group_age, gamma, preceding_ages_count) -> VpaResult`
 Back-calculates numbers-at-age and fishing mortality rates using Pope's (1972) mid-year catch approximation:
 ```math
 N_{a,t} = N_{a+1, t+1} \exp(M_{a,t}) + C_{a,t} \exp\left(\frac{M_{a,t}}{2}\right)
 ```
+When `gamma` is supplied, plus-group mortality across historical years follows the adult ratio protocol:
+```math
+F_{A, t} = \gamma \cdot \bar{F}_{A-k : A-1, \; t}
+```
+scaling plus-group mortality relative to fully-recruited preceding ages ($k = \text{preceding\_ages\_count}$, default 2).
 
 ### 4.2 Exact Baranov VPA
 
-`standard_vpa(catches, M; terminal_f, tol, max_iter) -> VpaResult`
-Inverts the continuous Baranov catch equation for every cohort cell $(a, t)$ using Newton-Raphson iterations:
+`standard_vpa(catches, M; terminal_f, tol, plus_group_age, gamma, preceding_ages_count) -> VpaResult`
+Inverts the continuous Baranov catch equation for every cohort cell $(a, t)$ with Pope's approximation initializing the scalar root solver:
 ```math
 \frac{C_{a,t}}{N_{a+1,t+1}} = \frac{F_{a,t}}{F_{a,t} + M_{a,t}} \frac{1 - \exp(-(F_{a,t} + M_{a,t}))}{\exp(-(F_{a,t} + M_{a,t}))}
 ```
+Supports the same adult ratio formulation $F_{A, t} = \gamma \cdot \bar{F}_{A-k : A-1, \; t}$ for standardized ICES/NAFO plus-group back-calculations.
 
 ### 4.3 Bayesian State-Space Cohort Analysis
 
@@ -248,7 +292,7 @@ Standard parameterization for 6 life-history stages:
 6. Mature females ($f_{\text{mat}}$)
 
 `simulate_dde_system(cfg, tspan; dt, removals_times, removals_amount) -> NamedTuple`
-Integrates continuous coupled delay differential equations across developmental lags $\tau \in \{7, 8, 9\}$ years with pulse fishery removals and density-dependent habitat-crowding mortality $d_2 u^2 / H(t)$.
+Integrates continuous coupled delay differential equations across developmental lags $\tau \in \{7, 8, 9\}$ years with pulse fishery removals and quadratic density-dependent mortality $d_2 u^2 / H(t)$. Continuous cubic Hermite history interpolation ensures accurate phase tracking during cohort propagation and resolves numerical stiffness.
 
 ### 5.2 Deriso-Schnute Delay-Difference Dynamics
 
@@ -360,17 +404,21 @@ F_{\text{target}}, & B \ge B_{\text{pa}}
 Evaluates the recommended target fishing mortality rate for observed biomass $B$.
 
 ### 7.2 Quota Stabilization
-
-`apply_tac_stabilizer(target_tac, previous_tac; max_decrease=0.15, max_increase=0.15) -> Float64`
+ 
+`apply_tac_stabilizer(target_tac, previous_tac; max_decrease=0.15, max_increase=0.15, biomass=nothing, blim=nothing) -> Float64`
 Applies asymmetric or symmetric change bounds to prevent interannual TAC volatility:
 ```math
-\mathrm{TAC}_{\text{rec}} = \max\left( \mathrm{TAC}_{t-1} (1 - \Delta_{\text{dec}}), \min\left( \mathrm{TAC}_{t-1} (1 + \Delta_{\text{inc}}), \mathrm{TAC}^* \right) \right)
+\mathrm{TAC}_t = \begin{cases}
+\min\left(\mathrm{TAC}_{t-1}(1 + \Delta_{\text{inc}}), \; \mathrm{TAC}^*\right) & \text{if } B_t < B_{\text{lim}} \text{ (emergency override)} \\[6pt]
+\max\left(\mathrm{TAC}_{t-1}(1 - \Delta_{\text{dec}}), \; \min\left(\mathrm{TAC}_{t-1}(1 + \Delta_{\text{inc}}), \; \mathrm{TAC}^*\right)\right) & \text{otherwise}
+\end{cases}
 ```
+When $B < B_{\text{lim}}$, capping downward quota adjustments perpetuates overfishing and delays rebuilding. The emergency override suspends the downward constraint to enforce compliance with the Precautionary Approach.
 
 ### 7.3 Management Strategy Evaluation (MSE)
 
-`simulate_mse(years, hcr; r=0.35, k=100.0, b0=80.0, obs_cv=0.15, proc_cv=0.05, tac_constraint=0.15) -> MseResult`
-Simulates closed-loop feedback management incorporating operating model stochastic dynamics, observation assessment errors, HCR evaluations, and TAC constraint implementations.
+`simulate_mse(years, hcr; r=0.35, k=100.0, b0=80.0, obs_cv=0.15, proc_cv=0.05, tac_constraint=0.15, emergency_override=true) -> MseResult`
+Simulates closed-loop feedback management incorporating operating model stochastic dynamics, observation assessment errors, HCR evaluations, TAC constraint implementations, and Precautionary Approach emergency overrides.
 
 `bayesian_mse_feedback(observed_biomass, catches, hcr; prior_r, prior_k, obs_cv)`
 Bayesian state-space feedback model in `Turing.jl` sampling biological capacity $r, K$, process error, and observation likelihood given HCR actions.
@@ -495,16 +543,18 @@ violate the equilibrium derivation of `F_MSY`.
 for a full synthesis.
 
 **Method.** Pope's (1972) backward approximation, exact Baranov VPA, and ADAPT
-conditional maximum likelihood with `q_a` profiled analytically.
+conditional maximum likelihood with `q_a` profiled analytically. Historical plus-group
+mortality supports both constant assumption ($F_{A, t} = F_{A, T}$) and the adult ratio
+protocol ($F_{A, t} = \gamma \cdot \bar{F}_{A-k : A-1, \; t}$) standard in ICES and NAFO.
 
-**Assumptions.** `M` is known; catch is known exactly and in numbers; the plus group is
-selected and its `F` is assumed constant across years; the backward recursion conditions
-on terminal `F`, so terminal `F` propagates into every earlier year; the index maps
+**Assumptions.** `M` is known; catch is known exactly and in numbers; the backward recursion
+conditions on terminal `F`, so terminal `F` propagates into every earlier year; the index maps
 multiplicatively to modelled abundance with log-scale errors.
 
 **Strengths.** Needs only catch-at-age and `M`; analytic profiling of `q_a` removes one
 nuisance parameter per age cheaply; divergence between Pope and exact Baranov VPA is a
-useful diagnostic for mid-year catch timing.
+useful diagnostic for mid-year catch timing; adult ratio formulation links historical plus-group
+exploitation directly to preceding recruited cohorts.
 
 **Weaknesses.** No stock-recruitment function, so the terminal-year estimate carries the
 projection; `M` error maps one-to-one into `F` error; without weight-at-age,
@@ -518,8 +568,9 @@ and pulsed seasonal fishing, such as snow crab.
 
 **Method.** Six-stage continuous delay differential system with impulsive removals,
 maternal recruitment entering at maturation lags of 7–9 years, and density-dependent
-mortality. The Deriso-Schnute delay-difference form provides the annual-step
-simplification.
+mortality. Continuous cubic Hermite history interpolation ensures accurate phase tracking
+during cohort propagation and alleviates numerical stiffness from quadratic density-dependent
+losses. The Deriso-Schnute delay-difference form provides the annual-step simplification.
 
 **Assumptions.** Stages are closed classes joined by single moult transitions; the
 development lags are constants rather than temperature-dependent; maturity and sex change
@@ -529,12 +580,11 @@ condition is the carrying capacity, so early years are transient.
 **Strengths.** Resolves within-year dynamics and pulse fisheries, which annual-step
 models cannot; carries a genuine development delay, so recruitment responds to female
 abundance years earlier; stage structure makes sex- and maturity-specific harvest control
-natural.
+natural; continuous Hermite interpolation tracks delay history without phase drift.
 
-**Weaknesses.** More structural constants than fishery data can identify; discretisation
-and impulse handling dominate numerical error and the scheme is only conditionally
-stable; the starting condition at `K` is arbitrary; best used for scenario comparison
-rather than absolute status.
+**Weaknesses.** More structural constants than fishery data can identify; quadratic
+density-dependent mortality induces numerical stiffness under coarse time steps; the starting
+condition at `K` is arbitrary; best used for scenario comparison rather than absolute status.
 
 ### 11.5 Catch curve, depletion, and age-length keys (`Empirical`)
 
@@ -629,60 +679,51 @@ ensemble) is the correct treatment when parameters are uncertain. `:single_draw`
 ignores uncertainty entirely. See `[simulation] parameter_combination` in the
 configuration files.
 
----
+### 11.9 Continuous logistic biomass dynamics (`ContinuousBiomassDynamics`)
 
-## 12. Pharmacopoeia of Defects Found and Fixed
+**Best use case.** Biomass-pool dynamics when removals occur at arbitrary sub-annual or
+continuous intervals, or when integrating over non-unit step sizes $\Delta t \ne 1.0$.
 
-Recorded because the same classes recur, and knowing the classes is more useful than the
-list.
+**Method.** Continuous-time logistic surplus-production ODE:
 
-### 12.1 Defects that produced wrong numbers or wrong labels
+$$\frac{dB}{dt} = r B \left(1 - \frac{B}{K}\right) - Y(t)$$
 
-| # | Location | Finding |
-|---|---|---|
-| 1 | `biomass_dynamics.jl:logistic_map_step` | Map step omitted the `m_t` term, computing `r·m·(1−m) − C/K` instead of `m + r·m·(1−m) − C/K`. Not the normalisation of `logistic_step` it claimed to be. |
-| 2 | `simulation_projection.jl:project_population` | Fields named `P(...)` held ratios, not probabilities; `n_sim` was accepted and ignored, so a deterministic result was presented as probabilistic. |
-| 3 | `simulation_projection.jl` | `dsb5 + 1.0` was returned as a rate: a log rate offset by an arbitrary constant. |
-| 4 | `model.jl:build_layout` | Parameter **names** for `sel_par` matrices were generated row-major while `unpack` stored column-major, so `sel_par[k][i,j]` mislabelled elements. |
-| 5 | `estimation.jl:fit` | `sub_lb`/`sub_ub` were computed and never used; L-BFGS ran unconstrained so bounded parameters could leave their bounds. |
-| 6 | `cohort_analysis.jl` | `biomass_ssb` was the same array as total abundance, reported as spawning biomass. |
-| 7 | `cohort_analysis.jl:AdaptResult` | Fields `converged` and `residual_variance` were missing; a notebook read both, so that cell always threw. |
-| 8 | `dynamics.jl:calc_total_mortality` | `unit_nodes(1)` errors for `n_m_nodes == 1`; `log_m_devs[2:ny]` was invalid for `ny < 3`. |
-| 9 | `visualization.jl:plot_state_variables` | Read a field `removals_biomass` that does not exist on `DelayDifferenceResult`. |
-| 10 | `simulation_engine.jl` (new module, during build) | The agent representation initially (a) omitted fertility entirely, (b) rounded per agent and so over-counted when agents outnumbered individuals, and (c) omitted the survivorship factor the matrix convention applies. Each silently produced a wrong trajectory. |
-| 11 | `simulation_engine.jl` (new module) | `project_state` required an ensemble for its default mode, so a plain call failed. |
+where $r$ is intrinsic growth rate [$\text{time}^{-1}$], $K$ is carrying capacity [mass],
+and $Y(t)$ is instantaneous removal rate [$\text{mass}\cdot\text{time}^{-1}$].
+Alternatively, in terms of instantaneous fishing mortality rate $F(t)$ [$\text{time}^{-1}$],
+$Y(t) = F(t) B(t)$.
 
-### 12.2 Defects that produced a missing likelihood
+For a finite integration step $\Delta t$, the interval catch mass $C_t$ [mass] extracted
+over $[t, t + \Delta t]$ is:
 
-Found by auditing every `@model` for computed-but-unused quantities. These are the most
-dangerous class, because the model looks complete and returns plausible numbers while a
-whole term is absent.
+$$C_t = \int_t^{t+\Delta t} Y(s)\, ds = \bar{Y}_t \, \Delta t$$
 
-| Model | Defect | Resolution |
-|---|---|---|
-| `bayesian_statistical_catch_at_age` | `Ahat = calc_age_proportions(...)` was computed and never used: the entire age-composition likelihood the docstring promised was missing. | Added `@addlogprob!(-nll)` using the same shared routines the deterministic objective minimises, so the two paths use one formulation. |
-| `bayesian_mse_feedback` | `hcr` was a required argument never read by the model. | Added the implementation-error term: realised catch against the catch the HCR prescribes applied to the latent stock, with its own `impl_sd`. |
-| `bayesian_per_recruit_model` | Computed `N, Z, C` from the shared trajectory then discarded all three and re-implemented the recursion inline. | Added a `natural_mortality` override to `per_recruit_trajectory` and made the model call it once. |
-| `bayesian_stage_matrix_model` | `maturity` was accepted, documented as unused, and was unused; a duplicated state-recursion block was also left by an earlier edit. | Added `survey_type = :vulnerable | :spawning` so maturity weights the observation mean, and removed the duplicate block. |
-| `bayesian_cohort_analysis` | Docstring promised a catch observation likelihood that neither the model nor its deterministic counterpart has. | Corrected the docstring: catch is an exact input in the standard ADAPT/Pope formulation, and adding a catch likelihood would double-count information already used to condition the reconstruction. |
+Integrating across the interval with constant removal rate $\bar{Y}_t = C_t / \Delta t$
+via semi-implicit Euler yields the exact discrete transition:
 
-### 12.3 Nomenclature and documentation inconsistencies
+$$B_{t+1} = \frac{B_t + \Delta t\, r\, B_t - C_t}{1 + \Delta t\, r\, B_t / K}$$
 
-- `rho` meant **variance proportion** in the SCAA leading parameters and **spawning
-  fraction** in the reference points. The latter is now `spawn_frac`.
-- `DelayDifferential` gave **opposite** stage orders to its notebook: growth flux runs 5→4→3→2→1, so stage 1 is the terminal class, not the youngest. Unified.
-- `MSYEquilibrium` carried `rmsy` and `ye` duplicating `re` and `msy` exactly; reduced
-  from 11 fields to 9.
-- The Bayesian delay-difference model drew the observation error from
-  `Normal(log(...), sigma)` on log biomass where every other model used `LogNormal`.
-  Unchanged in behaviour but now documented.
-- `AssessmentToolsAPI.md` documented symbols that no longer exist; `README.md` pointed at
-  a stale developer path and an out-of-date quick start.
-- Notebooks referenced removed functions and stale dataset paths.
+**Dimensional distinction.**
+- `catches`: interval removal mass $C_t$ [mass], **not** instantaneous rate. When
+  $\Delta t \ne 1.0$, entering an instantaneous rate into $C_t$ produces a factor of
+  $1/\Delta t$ dimensional distortion.
+- Instantaneous removal rate $Y_t = C_t / \Delta t$ [$\text{mass}\cdot\text{time}^{-1}$].
+- Instantaneous fishing mortality $F_t = Y_t / B_t = C_t / (B_t \, \Delta t)$ [$\text{time}^{-1}$].
+
+**Assumptions.** Monolithic biomass pool without age or stage selectivity; constant
+catchability $q$ for relative survey indices; constant removal rate across each step $\Delta t$;
+environmental carrying capacity $K$ is stationary.
+
+**Strengths.** Free from discrete-map overshooting ($B > K$ does not collapse to negative
+biomass under semi-implicit integration); seamlessly scales across arbitrary step sizes $\Delta t$;
+Bayesian state-space formulation in `Turing.jl` propagates demographic and observation noise.
+
+**Weaknesses.** Unstructured biomass ignores cohort dynamics; $K$ and $q$ require informative
+contrasts or priors for joint identifiability.
 
 ---
-
-## 13. Nomenclature Used Throughout
+ 
+## 12. Nomenclature Used Throughout
 
 | Concept | Canonical name | Notes |
 |---|---|---|
@@ -700,57 +741,6 @@ whole term is absent.
 | Leading parameters | `theta` | `(log R0, h, log M, log Rbar, log Rinit, rho, vartheta)` |
 | Harvest rate schedule | `harvest_rate` | `n_groups × nyears`, time-indexed |
 | Posterior ensemble | `ParameterEnsemble` | saved draws, selected whole at each step |
-
+ 
 ---
-
-## 14. How the Package Is Verified
-
-Three gates, all run from the project root.
-
-**1. Package tests.** `julia --project=. --startup-file=no test/runtests.jl`
-
-```
-Silver Hake Objective: 280.38480660973084
-Test Summary:                 | Pass  Total   Time
-AssessmentTools Package Tests |  125    125  29.2s
-Test Summary:                                       | Pass  Total  Time
-SimulationEngine (Projection, Agents, Reaction/SSA) |   35     35  6.9s
-Test Summary:                                   | Pass  Total  Time
-ContinuousBiomassDynamics (Continuous Logistic) |   15     15  0.2s
-```
-
-Total 175 tests across three test sets.
-
-The benchmark objective being bit-identical is the key regression signal: the SCAA
-likelihood, selectivity layout, mortality recursion and reference-point machinery all
-still produce the same numbers at the published parameter values.
-
-**2. Parse check.** `Meta.parseall` over every `.jl` file in `src/`, `notebooks/` and
-`test/`. Every edit is parse-checked before anything runs, and line endings are kept at
-CRLF.
-
-**3. Notebooks.** Pluto is broken in the current environment (its own precompile raises
-a `BoundsError` inside `PlutoRunner`), so notebooks are parse-checked but not executed.
-Nine notebooks exist and all parse. Where a notebook could be executed it was run end to
-end; that check is what surfaced the `removals_biomass` field error and confirmed the
-`AdaptResult` additions. The `continuous_biomass_dynamics_workflow` and
-`stage_matrix_leslie_workflow` notebooks are written but **not yet executed**, because
-Pluto cannot start in this environment; they are costed to run end to end once Pluto is
-repaired.
-
-`--startup-file=no` is required: a user start-up file loads `Revise` into the global
-environment, which fails on a missing transitive dependency and aborts the run before the
-package is reached.
-
----
-
-## 15. Outstanding Work
-
-- `simulate_mse` and `plot_fishery_predictions` still draw from the global RNG, so runs
-  are not reproducible by default. Adding an `rng` keyword is mechanical.
-- `bayesian_statistical_catch_at_age` still assembles its parameter vector with its own
-  loop rather than calling `assemble_x`, and its priors are not yet read from the control
-  table.
-- The reaction port uses Catalyst/JumpProcesses, but a systematic benchmark comparison
-  against the earlier tSSA implementation has not been written.
-- Regenerating the notebook figure assets and Parquet/Zarr exports has not been run.
+   

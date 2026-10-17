@@ -11,6 +11,7 @@ module Management
 
 using LinearAlgebra
 using Statistics
+using Random
 using Distributions
 using Turing
 

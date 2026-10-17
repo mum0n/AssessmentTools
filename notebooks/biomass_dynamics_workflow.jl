@@ -1,8 +1,19 @@
 ### A Pluto.jl notebook ###
-# v0.20.0
+# v1.0.4
 
 using Markdown
 using InteractiveUtils
+
+# ╔═╡ 20000001-0000-0000-0000-000000000002
+begin
+    import Pkg
+    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+    using AssessmentTools
+    using AssessmentTools.BiomassDynamics
+    using Parquet2
+    using DataFrames
+    using UnicodePlots
+end
 
 # ╔═╡ 20000001-0000-0000-0000-000000000001
 md"""
@@ -71,17 +82,6 @@ call that one function, so the two paths cannot drift apart.
 - Intermittent or impulsive removals violate the equilibrium reference-point derivation,
   so `F_MSY` should be treated as indicative rather than as an advice threshold.
 """
-
-# ╔═╡ 20000001-0000-0000-0000-000000000002
-begin
-    import Pkg
-    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-    using AssessmentTools
-    using AssessmentTools.BiomassDynamics
-    using Parquet2
-    using DataFrames
-    using UnicodePlots
-end
 
 # ╔═╡ 20000001-0000-0000-0000-000000000003
 md"""

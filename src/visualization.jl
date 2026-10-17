@@ -88,8 +88,10 @@ function plot_state_variables(res::MseResult)
 end
 
 """
-    plot_fishery_predictions(time, simulations; obs_time = nothing, obs_values = nothing,
-                             title = "Fishery Predictions Trace", xlabel = "Year", ylabel = "Biomass / Index") -> Plot
+    plot_fishery_predictions(time, simulations; rng = Random.default_rng(),
+                             obs_time = nothing, obs_values = nothing,
+                             title = "Fishery Predictions Trace", xlabel = "Year",
+                             ylabel = "Biomass / Index") -> Plot
 
 Incorporate `model_fishery` ensemble trace visualization:
 - Displays mean predicted trajectory overlaid with transparent/thin individual simulation realizations.
@@ -97,6 +99,7 @@ Incorporate `model_fishery` ensemble trace visualization:
 """
 function plot_fishery_predictions(times::AbstractVector,
                                   sims::AbstractMatrix{<:Real};
+                                  rng::Random.AbstractRNG = Random.default_rng(),
                                   obs_time = nothing,
                                   obs_values = nothing,
                                   title::AbstractString = "Fishery Predictions Trace",
@@ -111,7 +114,7 @@ function plot_fishery_predictions(times::AbstractVector,
 
     # Plot sample traces
     n_sample = min(nsim, 5)
-    sample_indices = rand(1:nsim, n_sample)
+    sample_indices = rand(rng, 1:nsim, n_sample)
     colors = [:yellow, :cyan, :magenta, :green, :blue]
     for (i, s_idx) in enumerate(sample_indices)
         col = colors[(i - 1) % length(colors) + 1]

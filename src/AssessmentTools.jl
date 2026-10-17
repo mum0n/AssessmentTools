@@ -42,6 +42,7 @@ include("SimulationEngine.jl")
 
 using LinearAlgebra
 using Statistics
+using Random
 using UnicodePlots
 
 using .StatisticalCatchAtAge

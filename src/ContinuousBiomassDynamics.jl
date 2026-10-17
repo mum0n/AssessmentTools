@@ -5,10 +5,12 @@
 # the right unit when removals are aggregated to years. This module carries the same
 # dynamics in continuous time,
 #
-#     dB/dt = r B (1 - B/K) - C(t),
+#     dB/dt = r B (1 - B/K) - F(t) B,   or   dB/dt = r B (1 - B/K) - Y(t),
 #
-# so removals can enter at their actual timing and the trajectory between removals is
-# resolved. Both share one density-dependence form, and the discrete map is exactly this
+# where Y(t) is the instantaneous rate of removal [mass · time⁻¹] and F(t) is the
+# instantaneous fishing mortality rate [time⁻¹]. Removals entering as interval catch mass
+# C_t [mass] over step Δt correspond to an average removal rate Y_t = C_t / Δt.
+# Both share one density-dependence form, and the discrete map is exactly this
 # ODE integrated with forward Euler over a unit step, so the two are the same model at
 # different time resolutions rather than two models.
 # ------------------------------------------------------------------------------------
@@ -35,14 +37,19 @@ User-specified configuration for the continuous-time logistic biomass model. Eve
 is read from a TOML file by [`load_continuous_biomass_config`](@ref); nothing is defaulted
 in code.
 
-# Fields
-- `r::Float64`: intrinsic population growth rate.
-- `k::Float64`: environmental carrying capacity (unexploited equilibrium biomass).
-- `b0::Float64`: initial biomass.
-- `n_hours::Int`: number of steps in the projected time series.
-- `dt::Float64`: integration step size, in model time units.
-- `catches::Vector{Float64}`: removals at each step.
-- `survey_q::Float64`: survey catchability mapping biomass to relative index.
+# Dimensional Specification
+- `r::Float64`: intrinsic population growth rate [time⁻¹]. Must be strictly positive.
+- `k::Float64`: environmental carrying capacity [mass]. Must be strictly positive.
+- `b0::Float64`: initial biomass [mass]. Must be non-negative and satisfy `b0 <= 2.0 * k`.
+- `n_hours::Int`: number of discrete steps in the projected time series.
+- `dt::Float64`: integration step duration Δt [time]. Must be strictly positive.
+- `catches::Vector{Float64}`: total removal mass [mass] harvested during each interval
+  `[t, t + Δt]`. To avoid dimensional distortion when `Δt ≠ 1.0`, the effective
+  instantaneous removal rate over interval `i` is `Y_i = catches[i] / dt` [mass · time⁻¹],
+  yielding total interval extraction `Y_i * dt = catches[i]`. Every entry must be
+  non-negative.
+- `survey_q::Float64`: survey catchability mapping biomass to relative index [dimensionless].
+  Must be strictly positive.
 """
 struct ContinuousBiomassConfig
     r::Float64
@@ -61,9 +68,9 @@ Output of [`integrate_continuous_biomass`](@ref).
 
 # Fields
 - `times::Vector{Float64}`: time of each recorded frame.
-- `biomass::Vector{Float64}`: biomass at each frame.
-- `surplus::Vector{Float64}`: surplus production `rB(1 - B/K)` at each frame.
-- `removals::Vector{Float64}`: removals applied, at each frame.
+- `biomass::Vector{Float64}`: biomass at each frame [mass].
+- `surplus::Vector{Float64}`: surplus production rate `rB(1 - B/K)` at each frame [mass · time⁻¹].
+- `removals::Vector{Float64}`: interval catch mass applied [mass].
 """
 struct ContinuousBiomassResult
     times::Vector{Float64}
@@ -75,10 +82,19 @@ end
 """
     load_continuous_biomass_config(path::AbstractString) -> ContinuousBiomassConfig
 
-Read the `[continuous]` section of a TOML file. Every key is required; a missing key
-raises rather than falling back to a compiled-in default.
+Read the `[continuous]` section of a TOML file and validate parameter bounds and dimensions.
+Every key is required; a missing key raises rather than falling back to a compiled-in default.
 
 Expected keys: `r`, `k`, `b0`, `n_hours`, `dt`, `catches`, `survey_q`.
+
+# Parameter Sanity Checks
+- `r > 0.0` and `r < 10.0`: biological population growth rate upper bound to catch unit mismatches
+  (e.g., annual vs daily rates).
+- `k > 0.0`: carrying capacity must be positive.
+- `b0 >= 0.0` and `b0 <= 2.0 * k`: initial biomass cannot exceed twice carrying capacity.
+- `dt > 0.0` and `dt <= 10.0`: time step must be strictly positive and numerically reasonable.
+- `catches`: non-negative vector of length `n_hours`, representing interval catch mass.
+- `survey_q > 0.0`: catchability scalar must be strictly positive.
 """
 function load_continuous_biomass_config(path::AbstractString)
     cfg = Config.parse_file(path)
@@ -88,13 +104,20 @@ function load_continuous_biomass_config(path::AbstractString)
     n = Config.load_int(d, "n_hours", where)
     n >= 1 || error("'n_hours' in $where must be at least 1, got $n.")
     dt = Config.positive(d, "dt", where)
+    dt <= 10.0 || error("'dt' in $where must be <= 10.0 time units, got $dt.")
     k = Config.positive(d, "k", where)
     b0 = Config.non_negative(d, "b0", where)
-    r = Config.load_float(d, "r", where)
+    b0 <= 2.0 * k ||
+        error("'b0' ($b0) in $where exceeds twice carrying capacity 'k' ($k).")
+    r = Config.positive(d, "r", where)
+    r < 10.0 ||
+        error("'r' ($r) in $where is abnormally large (>= 10.0); check time unit specification.")
     catches = Config.load_reals(d, "catches", where)
     length(catches) == n ||
         error("'catches' in $where must have $n entries, got $(length(catches)).")
-    q = Config.non_negative(d, "survey_q", where)
+    all(c -> c >= 0.0, catches) ||
+        error("All entries in 'catches' in $where must be non-negative.")
+    q = Config.positive(d, "survey_q", where)
 
     return ContinuousBiomassConfig(r, k, b0, n, dt, catches, q)
 end
@@ -102,48 +125,59 @@ end
 """
     logistic_growth_ode!(dB, B, p, t) -> Nothing
 
-Right-hand side of the logistic surplus-production ODE fitted for `DifferentialEquations`:
+Right-hand side of the continuous logistic surplus-production ODE:
 
 ```math
-\\frac{dB}{dt} = r B \\left(1 - \\frac{B}{K}\\right) - C(t)
+\\frac{dB}{dt} = r B \\left(1 - \\frac{B}{K}\\right) - Y(t)
 ```
 
-`C(t)` is the removal in force at time `t`. It is not declared as a parameter of `p`
-because the ODE is written for a generic state `B` and the removal schedule is supplied
-through the parameter tuple by the caller.
+where `B` is population biomass [mass], `r` is intrinsic growth rate [time⁻¹],
+`K` is carrying capacity [mass], and `Y(t)` is the instantaneous harvest removal rate
+[mass · time⁻¹]. If fishing mortality rate `F(t)` [time⁻¹] is specified instead of removal rate,
+the harvest term is `F(t) B`. Parameter tuple `p` is `(r, k, Y_now)`.
 """
 function logistic_growth_ode!(dB, B, p, t)
-    r, k, c_now = p
+    r, k, y_now = p
     surplus = r * B[1] * (1.0 - B[1] / k)
-    dB[1] = surplus - c_now
+    dB[1] = surplus - y_now
     return nothing
 end
 
 """
     integrate_continuous_biomass(cfg::ContinuousBiomassConfig;
-                                r::Real = cfg.r, k::Real = cfg.k) -> ContinuousBiomassResult
+                                 r::Real = cfg.r, k::Real = cfg.k) -> ContinuousBiomassResult
 
-Integrate the continuous logistic dynamics with the removal schedule in `cfg` by
-semi-implicit (exponential) Euler:
+Integrate continuous logistic dynamics under interval removal mass schedule `catches` by
+semi-implicit Euler:
 
 ```math
 B_{t+1} = \\frac{B_t + \\Delta t\\, r\\, B_t - C_t}{1 + \\Delta t\\, r\\, B_t / K}
 ```
 
-which is the exact solution of the logistic ODE when `C` is held constant over the step.
-Because it is exact for constant removal and removes the stiffness at high biomass, it is
-preferred to forward Euler: forward Euler overshoots `K` when `r\\Delta t` is large and
-then produces negative biomass.
+where `C_t` is the interval catch mass [mass] harvested across time interval `[t, t + \\Delta t]`.
+When removals are given as an instantaneous rate `Y_t` [mass · time⁻¹], the interval catch
+is `C_t = Y_t \\Delta t`. When removals are given as instantaneous fishing mortality `F_t`
+[time⁻¹], `C_t = F_t B_t \\Delta t`.
 
-`n_hours + 1` frames are returned including the initial state.
+The recurrence is the exact solution of the logistic ODE when removal rate `Y_t = C_t / \\Delta t`
+is constant over the step. `n_hours + 1` frames are returned including the initial state.
+
+# Sanity Checks
+- `r > 0.0` and `r < 10.0`: intrinsic growth rate bounds.
+- `k > 0.0`: carrying capacity positivity.
+- `cfg.dt > 0.0`: time step positivity.
+- `cfg.b0 <= 2.0 * k`: initial biomass compatibility with capacity.
 """
 function integrate_continuous_biomass(cfg::ContinuousBiomassConfig;
                                       r::Real = cfg.r, k::Real = cfg.k)
-    r > 0 || error("Model growth rate r must be positive, got $r.")
-    k > 0 || error("Carrying capacity k must be positive, got $k.")
+    r > 0.0 || error("Model growth rate r must be positive, got $r.")
+    r < 10.0 || error("Model growth rate r ($r) is abnormally high (>= 10.0).")
+    k > 0.0 || error("Carrying capacity k must be positive, got $k.")
+    cfg.b0 <= 2.0 * k ||
+        error("Initial biomass b0 ($(cfg.b0)) exceeds twice carrying capacity k ($k).")
+    cfg.dt > 0.0 || error("Step size dt must be positive, got $(cfg.dt).")
 
     n = cfg.n_hours
-    # `n_hours + 1` frames are returned including the initial state.
     times = Vector{Float64}(undef, n + 1)
     biomass = Vector{Float64}(undef, n + 1)
     surplus = Vector{Float64}(undef, n + 1)
@@ -158,6 +192,7 @@ function integrate_continuous_biomass(cfg::ContinuousBiomassConfig;
     for i in 1:n
         h = cfg.dt
         c = cfg.catches[i]
+        c >= 0.0 || error("Catch at index $i must be non-negative, got $c.")
         b_next = (b + h * r * b - c) / (1.0 + h * r * b / k)
         b = max(0.0, b_next)
         biomass[i + 1] = b
