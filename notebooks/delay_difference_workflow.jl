@@ -1,8 +1,19 @@
 ### A Pluto.jl notebook ###
-# v0.20.0
+# v1.0.4
 
 using Markdown
 using InteractiveUtils
+
+# ╔═╡ 50000001-0000-0000-0000-000000000002
+begin
+    import Pkg
+    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+    using AssessmentTools
+    using AssessmentTools.DelayDifferential
+    using Parquet2
+    using DataFrames
+    using UnicodePlots
+end
 
 # ╔═╡ 50000001-0000-0000-0000-000000000001
 md"""
@@ -71,17 +82,6 @@ written once; no likelihood code is duplicated per engine.
 - $s$ and $q$ are weakly identified separately when the abundance index is
   uninformative; they should be profiled or given tighter priors.
 """
-
-# ╔═╡ 50000001-0000-0000-0000-000000000002
-begin
-    import Pkg
-    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-    using AssessmentTools
-    using AssessmentTools.DelayDifferential
-    using Parquet2
-    using DataFrames
-    using UnicodePlots
-end
 
 # ╔═╡ 50000001-0000-0000-0000-000000000003
 md"""
@@ -253,4 +253,3 @@ end
 # ╠═50000001-0000-0000-0000-000000000012
 # ╠═50000001-0000-0000-0000-000000000013
 # ╠═50000001-0000-0000-0000-000000000014
-

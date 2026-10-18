@@ -1,8 +1,18 @@
 ### A Pluto.jl notebook ###
-# v0.20.0
+# v1.0.4
 
 using Markdown
 using InteractiveUtils
+
+# ╔═╡ 30000001-0000-0000-0000-000000000002
+begin
+    import Pkg
+    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+    using AssessmentTools
+    using AssessmentTools.CohortAnalysis
+    using LinearAlgebra
+    using UnicodePlots
+end
 
 # ╔═╡ 30000001-0000-0000-0000-000000000001
 md"""
@@ -79,16 +89,6 @@ terminal `F` are amplified into the plus group and then into adjacent cohorts.
   (see `REVIEW.md` §1.1 item 6); pass `weight_at_age` and `maturity` for a true SSB.
 - With a weak survey the ADAPT objective is nearly flat and `F_term` is weakly identified.
 """
-
-# ╔═╡ 30000001-0000-0000-0000-000000000002
-begin
-    import Pkg
-    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-    using AssessmentTools
-    using AssessmentTools.CohortAnalysis
-    using LinearAlgebra
-    using UnicodePlots
-end
 
 # ╔═╡ 30000001-0000-0000-0000-000000000003
 md"""

@@ -1,8 +1,19 @@
 ### A Pluto.jl notebook ###
-# v0.20.0
+# v1.0.4
 
 using Markdown
 using InteractiveUtils
+
+# ╔═╡ 40000001-0000-0000-0000-000000000002
+begin
+    import Pkg
+    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+    using AssessmentTools
+    using AssessmentTools.DelayDifferential
+    using Parquet2
+    using DataFrames
+    using UnicodePlots
+end
 
 # ╔═╡ 40000001-0000-0000-0000-000000000001
 md"""
@@ -96,17 +107,6 @@ by default (the newly recruitable class).
 variational engines over the same Turing model, so no model is re-implemented to
 switch engines.
 """
-
-# ╔═╡ 40000001-0000-0000-0000-000000000002
-begin
-    import Pkg
-    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-    using AssessmentTools
-    using AssessmentTools.DelayDifferential
-    using Parquet2
-    using DataFrames
-    using UnicodePlots
-end
 
 # ╔═╡ 40000001-0000-0000-0000-000000000003
 md"""

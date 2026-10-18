@@ -1,8 +1,20 @@
 ### A Pluto.jl notebook ###
-# v0.20.0
+# v1.0.4
 
 using Markdown
 using InteractiveUtils
+
+# ╔═╡ 00000001-0000-0000-0000-000000000002
+begin
+    import Pkg
+    # Activate the AssessmentTools package environment
+    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+    using AssessmentTools
+    using AssessmentTools.StatisticalCatchAtAge
+    using LinearAlgebra
+    using Statistics
+    using Printf
+end
 
 # ╔═╡ 00000001-0000-0000-0000-000000000001
 md"""
@@ -92,18 +104,6 @@ phase means the parameter is held at its starting value for the whole fit.
 **Bayesian extension.** The same fit can be expressed as a Turing model and run with
 NUTS, ADVI, or MAP through `AssessmentTools.InferenceBridge`.
 """
-
-# ╔═╡ 00000001-0000-0000-0000-000000000002
-begin
-    import Pkg
-    # Activate the AssessmentTools package environment
-    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-    using AssessmentTools
-    using AssessmentTools.StatisticalCatchAtAge
-    using LinearAlgebra
-    using Statistics
-    using Printf
-end
 
 # ╔═╡ 00000001-0000-0000-0000-000000000003
 md"""
@@ -298,6 +298,25 @@ begin
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000000
+# Cell order:
+# ╠═00000001-0000-0000-0000-000000000001
+# ╠═00000001-0000-0000-0000-000000000002
+# ╠═00000001-0000-0000-0000-000000000003
+# ╠═00000001-0000-0000-0000-000000000004
+# ╠═00000001-0000-0000-0000-000000000005
+# ╠═00000001-0000-0000-0000-000000000006
+# ╠═00000001-0000-0000-0000-000000000007
+# ╠═00000001-0000-0000-0000-000000000008
+# ╠═00000001-0000-0000-0000-000000000009
+# ╠═00000001-0000-0000-0000-000000000010
+# ╠═00000001-0000-0000-0000-000000000011
+# ╠═00000001-0000-0000-0000-000000000012
+# ╠═00000001-0000-0000-0000-000000000013
+# ╠═00000001-0000-0000-0000-000000000014
+# ╠═00000001-0000-0000-0000-000000000015
+# ╠═00000001-0000-0000-0000-000000000016
+# ╠═00000001-0000-0000-0000-00000000001
+
 # ╔═╡ Cell order:
 # ╠═00000001-0000-0000-0000-000000000001
 # ╠═00000001-0000-0000-0000-000000000002
@@ -316,3 +335,4 @@ end
 # ╠═00000001-0000-0000-0000-000000000015
 # ╠═00000001-0000-0000-0000-000000000016
 # ╠═00000001-0000-0000-0000-000000000017
+# ╠═00000000-0000-0000-0000-000000000000

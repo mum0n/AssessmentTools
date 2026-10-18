@@ -1,8 +1,41 @@
 ### A Pluto.jl notebook ###
-# v0.20.0
+# v1.0.4
 
 using Markdown
 using InteractiveUtils
+
+# ╔═╡ 00000003-0000-0000-0000-000000000002
+begin
+    import Pkg
+    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+    using AssessmentTools
+    using AssessmentTools.Empirical
+    using AssessmentTools.Management
+    using LinearAlgebra
+    using Statistics
+    using Printf
+end
+
+# ╔═╡ 00000003-0000-0000-0000-000000000012
+begin
+    using UnicodePlots
+    mse_years = 2025:2045
+    mse_hcr = HockeyStickHCR(25.0, 50.0, 0.02, 0.25)
+    
+    mse_sim = simulate_mse(
+        mse_years, mse_hcr;
+        r = 0.35, k = 100.0, b0 = 70.0,
+        obs_cv = 0.15, proc_cv = 0.05, tac_constraint = 0.15
+    )
+    
+    p_mse = plot_state_variables(mse_sim)
+    (
+        mse_years = "$(minimum(mse_sim.years)) - $(maximum(mse_sim.years))",
+        terminal_true_biomass = round(mse_sim.true_biomass[end]; digits = 2),
+        mean_catch = round(mean(mse_sim.catches); digits = 2),
+        plot_type = typeof(p_mse)
+    )
+end
 
 # ╔═╡ 00000003-0000-0000-0000-000000000001
 md"""
@@ -78,18 +111,6 @@ The empirical estimators in this notebook use the same `catch` and `process` arg
 as the stochastic age-structured models of the SCAA module so that empirical and
 model-based estimates can be compared on identical data.
 """
-
-# ╔═╡ 00000003-0000-0000-0000-000000000002
-begin
-    import Pkg
-    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-    using AssessmentTools
-    using AssessmentTools.Empirical
-    using AssessmentTools.Management
-    using LinearAlgebra
-    using Statistics
-    using Printf
-end
 
 # ╔═╡ 00000003-0000-0000-0000-000000000003
 md"""
@@ -302,27 +323,6 @@ md"""
 
 Simulate closed-loop feedback management over a 20-year horizon combining stochastic biological production, observation error, HCR decision-making, and TAC constraints:
 """
-
-# ╔═╡ 00000003-0000-0000-0000-000000000012
-begin
-    using UnicodePlots
-    mse_years = 2025:2045
-    mse_hcr = HockeyStickHCR(25.0, 50.0, 0.02, 0.25)
-    
-    mse_sim = simulate_mse(
-        mse_years, mse_hcr;
-        r = 0.35, k = 100.0, b0 = 70.0,
-        obs_cv = 0.15, proc_cv = 0.05, tac_constraint = 0.15
-    )
-    
-    p_mse = plot_state_variables(mse_sim)
-    (
-        mse_years = "$(minimum(mse_sim.years)) - $(maximum(mse_sim.years))",
-        terminal_true_biomass = round(mse_sim.true_biomass[end]; digits = 2),
-        mean_catch = round(mean(mse_sim.catches); digits = 2),
-        plot_type = typeof(p_mse)
-    )
-end
 
 # ╔═╡ 00000003-0000-0000-0000-000000000013
 md"""

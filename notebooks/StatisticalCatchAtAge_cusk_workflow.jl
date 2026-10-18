@@ -1,8 +1,20 @@
 ### A Pluto.jl notebook ###
-# v0.20.0
+# v1.0.4
 
 using Markdown
 using InteractiveUtils
+
+# ╔═╡ 10000001-0000-0000-0000-000000000002
+begin
+    import Pkg
+    # Activate the AssessmentTools package environment
+    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+    using AssessmentTools
+    using AssessmentTools.StatisticalCatchAtAge
+    using LinearAlgebra
+    using Statistics
+    using Printf
+end
 
 # ╔═╡ 10000001-0000-0000-0000-000000000001
 md"""
@@ -83,18 +95,6 @@ silver hake, configured for cusk from `data/cusk/` (`data.dat`, `control.ctl`,
 (`fit_map`), NUTS (`sample_posterior`) or variational inference (`fit_vi`) through
 `AssessmentTools.InferenceBridge`.
 """
-
-# ╔═╡ 10000001-0000-0000-0000-000000000002
-begin
-    import Pkg
-    # Activate the AssessmentTools package environment
-    Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-    using AssessmentTools
-    using AssessmentTools.StatisticalCatchAtAge
-    using LinearAlgebra
-    using Statistics
-    using Printf
-end
 
 # ╔═╡ 10000001-0000-0000-0000-000000000003
 md"""
@@ -321,6 +321,24 @@ begin
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000000
+# Cell order:
+# ╠═10000001-0000-0000-0000-000000000001
+# ╠═10000001-0000-0000-0000-000000000002
+# ╠═10000001-0000-0000-0000-000000000003
+# ╠═10000001-0000-0000-0000-000000000004
+# ╠═10000001-0000-0000-0000-000000000005
+# ╠═10000001-0000-0000-0000-000000000006
+# ╠═10000001-0000-0000-0000-000000000007
+# ╠═10000001-0000-0000-0000-000000000008
+# ╠═10000001-0000-0000-0000-000000000009
+# ╠═10000001-0000-0000-0000-000000000010
+# ╠═10000001-0000-0000-0000-000000000011
+# ╠═10000001-0000-0000-0000-000000000012
+# ╠═10000001-0000-0000-0000-000000000013
+# ╠═10000001-0000-0000-0000-000000000014
+# ╠═10000001-0000-0000-0000-000000000015
+# ╠═10000001-0000-0000-0000-00000000001
+
 # ╔═╡ Cell order:
 # ╠═10000001-0000-0000-0000-000000000001
 # ╠═10000001-0000-0000-0000-000000000002
@@ -338,3 +356,4 @@ end
 # ╠═10000001-0000-0000-0000-000000000014
 # ╠═10000001-0000-0000-0000-000000000015
 # ╠═10000001-0000-0000-0000-000000000016
+# ╠═00000000-0000-0000-0000-000000000000
