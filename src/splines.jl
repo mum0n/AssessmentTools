@@ -7,8 +7,9 @@
     CubicSpline(x, y; yp1 = 0.0, ypn = 0.0)
 
 Cubic spline interpolation of `y` over knots `x` powered by `Interpolations.jl`
-with clamped flat boundary conditions (`Flat(OnGrid())`) or `DataInterpolations.jl`
-for irregular grids.
+with clamped flat boundary conditions (`Flat(OnGrid())`). Requires uniformly
+spaced knots for ForwardDiff AD compatibility. Non-uniform grids are not supported.
+
 """
 function CubicSpline end
 
@@ -18,16 +19,12 @@ function CubicSpline(x::AbstractVector{<:Real}, y::AbstractVector; yp1 = 0.0, yp
     n >= 2 || error("A cubic spline needs at least 2 nodes, found $n.")
     step_val = (x[end] - x[1]) / (n - 1)
     is_uniform = all(i -> abs((x[i] - x[i - 1]) - step_val) < 1e-12, 2:n)
-    
-    if is_uniform
-        r = range(first(x), last(x), length = n)
-        itp = cubic_spline_interpolation(r, y, bc = Interpolations.Flat(Interpolations.OnGrid()))
-        return itp
-    else
-        # For non-uniform knot spacing, use DataInterpolations.CubicSpline
-        itp = DataInterpolations.CubicSpline(y, x)
-        return itp
-    end
+    is_uniform || error("CubicSpline requires uniformly spaced knots; non-uniform " *
+                        "grids are not supported (Interpolations.jl provides " *
+                        "guaranteed AD compatibility only for uniform grids).")
+    r = range(first(x), last(x), length = n)
+    itp = cubic_spline_interpolation(r, y, bc = Interpolations.Flat(Interpolations.OnGrid()))
+    return itp
 end
 
 """

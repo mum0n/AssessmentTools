@@ -40,6 +40,10 @@ const AVAILABLE_SEGMENTS = Dict{Symbol, @NamedTuple{file::String, desc::String}}
     :simulation => (
         file = "test_simulation.jl",
         desc = "Continuous DDE, Continuous Biomass & SimulationEngine (SSA/Agents)"
+    ),
+    :multigear_ad => (
+        file = "test_multigear_ad.jl",
+        desc = "Multi-Gear Baranov Jacobian & AD Compatibility"
     )
 )
 

@@ -53,7 +53,7 @@ function solve_baranov_f(ct::AbstractVector{<:Real}, m::Real, V::AbstractMatrix{
                     t1 = (ft[i] .* ba .* V[i, :]) ./ Z
                     t2 = t1 .* V[j, :]
                     t3 = t2 ./ Z
-                    J[j, i] = -sum(t2 .* sa) + sum(t3 .* oa)
+                    J[i, j] = -sum(t2 .* sa) + sum(t3 .* oa)
                 end
             end
         end
@@ -294,14 +294,12 @@ function calc_reference_points(m::StockModel, mort, log_sel, theta::AbstractVect
 
     function msy_residual(f::AbstractVector{<:Real})
         eq = calc_equilibrium_point(f, ro, h, m_val, spawn_frac, wa, fa, V)
-        return vcat(eq.dye, sum(eq.dye))
+        return eq.dye
     end
 
     function msy_jacobian(f::AbstractVector{<:Real})
         eq = calc_equilibrium_point(f, ro, h, m_val, spawn_frac, wa, fa, V)
-        # d(sum dYe)/dF_j = sum over k of the second derivative of yield
-        extra = vec(sum(eq.d2ye, dims = 1))
-        return vcat(eq.d2ye, extra')
+        return eq.d2ye
     end
 
     fmsy0 = fill(0.6 * m_val, nfleet)
@@ -325,7 +323,7 @@ function calc_reference_points(m::StockModel, mort, log_sel, theta::AbstractVect
         fk = fbar .* lambda
         eq2 = calc_equilibrium_point(fk, ro, h, m_val, spawn_frac, wa, fa, V)
         dYe = sum(eq2.dye)
-        d2Ye = sum(diag(eq2.d2ye))
+        d2Ye = dot(lambda, eq2.d2ye, lambda)
 
         if abs(dYe) < tol_msy
             fall = fk
@@ -340,7 +338,7 @@ function calc_reference_points(m::StockModel, mort, log_sel, theta::AbstractVect
         fall = fbar .* lambda
     end
 
-    umsy = sum(eq_msy.ye) / (eq_msy.bi + 1e-15)
+    umsy = sum(eq_msy.ye) / (eq_msy.be + 1e-15)
 
     return MSYEquilibrium(
         eq_msy.bo, eq_msy.be, fmsy, fall, eq_msy.ye,

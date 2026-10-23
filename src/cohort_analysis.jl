@@ -457,12 +457,15 @@ end
                        survey_ages = 1:size(catches, 1),
                        prior_terminal_f = fill(0.30, size(catches, 1)),
                        prior_f_sd = 0.25,
-                       obs_cv = 0.20)
+                       obs_cv = 0.20,
+                       exact = false)
 
 Bayesian ADAPT Virtual Population Analysis in `Turing.jl`:
 - Formulates ADAPT tuning with informative lognormal priors on terminal fishing mortalities.
 - Integrates full backward cohort reconstruction.
 - Evaluates lognormal observation likelihood for age-specific survey abundance indices.
+- `exact = false` (default): Pope's (1972) approximation for backward recursion.
+- `exact = true`: Exact Baranov (Gulland 1965) via Newton's method (5 iterations).
 """
 @model function bayesian_adapt_vpa(catches::AbstractMatrix{<:Real},
                                     survey_index::AbstractMatrix,
@@ -476,9 +479,10 @@ Bayesian ADAPT Virtual Population Analysis in `Turing.jl`:
                                     q_lower::Real = 1.0e-6,
                                     q_upper::Real = 0.1,
                                     prior_obs_sd_sd::Real = 0.05,
-                                    obs_sd_lower::Real = 0.05,
-                                    obs_sd_upper::Real = 0.60,
-                                    mu_floor::Real = 1.0e-6)
+                                     obs_sd_lower::Real = 0.05,
+                                     obs_sd_upper::Real = 0.60,
+                                     mu_floor::Real = 1.0e-6,
+                                     exact::Bool = false)
     na, ny = size(catches)
     size(survey_index) == (na, ny) || error("catches and survey_index dimensions must match.")
 
@@ -521,15 +525,48 @@ Bayesian ADAPT Virtual Population Analysis in `Turing.jl`:
         end
     end
 
-    # Pope's recursion
-    for a in reverse(1:(na - 1))
-        for t in reverse(1:(ny - 1))
-            m_at = M_mat[a, t]
-            N[a, t] = N[a + 1, t + 1] * exp(m_at) + catches[a, t] * exp(0.5 * m_at)
-            if N[a, t] > 0.0 && N[a + 1, t + 1] > 0.0
-                F[a, t] = max(0.0, log(N[a, t] / N[a + 1, t + 1]) - m_at)
-            else
-                F[a, t] = 0.0
+    # Cohort reconstruction: exact Baranov (Newton) or Pope's approximation
+    if exact
+        # Exact VPA via Newton's method (fixed iterations, differentiable).
+        # Terminal year uses exact Baranov (already exact above).
+        for a in reverse(1:(na - 1))
+            for t in reverse(1:(ny - 1))
+                m_at = M_mat[a, t]
+                c_at = catches[a, t]
+                n_next = N[a + 1, t + 1]
+                if n_next > 0.0 && c_at > 0.0
+                    r = c_at / n_next
+                    # Initial guess from Pope's approximation
+                    n_pope = n_next * exp(m_at) + c_at * exp(0.5 * m_at)
+                    f = max(0.0, log(n_pope / n_next) - m_at)
+                    # Newton iterations (5 steps)
+                    for _ in 1:5
+                        z = f + m_at
+                        z <= 0.0 && break
+                        g = (f / z) * (exp(z) - 1.0)
+                        dg = (z * (exp(z) - 1.0) + f * (z * exp(z) - exp(z) + 1.0)) / (z * z)
+                        abs(dg) < 1e-15 && break
+                        f = max(0.0, f - (g - r) / dg)
+                    end
+                    F[a, t] = f
+                    N[a, t] = n_next * exp(f + m_at)
+                else
+                    F[a, t] = 0.0
+                    N[a, t] = n_next * exp(m_at)
+                end
+            end
+        end
+    else
+        # Pope's recursion (default)
+        for a in reverse(1:(na - 1))
+            for t in reverse(1:(ny - 1))
+                m_at = M_mat[a, t]
+                N[a, t] = N[a + 1, t + 1] * exp(m_at) + catches[a, t] * exp(0.5 * m_at)
+                if N[a, t] > 0.0 && N[a + 1, t + 1] > 0.0
+                    F[a, t] = max(0.0, log(N[a, t] / N[a + 1, t + 1]) - m_at)
+                else
+                    F[a, t] = 0.0
+                end
             end
         end
     end

@@ -196,7 +196,7 @@ function simulate_mse(years::AbstractVector{<:Integer},
             # Operating model transition with process error
             p_t = r * b_true[t] * (1.0 - b_true[t] / k)
             dev_p = exp(randn(rng) * proc_cv - 0.5 * proc_cv^2)
-            b_true[t + 1] = max(1e-4, (b_true[t] - catch_t + p_t) * dev_p)
+            b_true[t + 1] = max(1e-4, b_true[t] - catch_t + p_t * dev_p)
         end
     end
 

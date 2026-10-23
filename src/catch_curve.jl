@@ -285,7 +285,7 @@ Z &\\sim \\mathrm{TruncatedNormal}(\\mu_Z, \\sigma_Z, Z_{\\rm low}, Z_{\\rm up})
     sigma ~ truncated(Normal(prior_sigma_mu, prior_sigma_sd), sigma_lower, sigma_upper)
 
     for i in eachindex(sub_ages)
-        mu = alpha - z * (sub_ages[i] - sub_ages[1])
+        mu = alpha - z * sub_ages[i]
         log_catches[i] ~ Normal(mu, sigma)
     end
 

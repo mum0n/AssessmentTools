@@ -12,6 +12,7 @@ A modular fisheries stock assessment and management analysis toolkit in native J
 - **Delay Differential Dynamics (`DelayDifferential`)**: Multi-stage continuous delay differential equation (DDE) systems capturing development lags, maternal reproductive delays, habitat-crowding constraints, and pulse fishery removals (Choi 2024).
 - **Empirical Diagnostics (`Empirical`)**: Rapid non-parametric and linear regression diagnostics including Chapman-Robson minimum-variance unbiased mortality estimators, weighted catch curves, Leslie and DeLury depletion estimators, and Age-Length Key (ALK) expansion matrices.
 - **Harvest Management (`Management`)**: Precautionary Harvest Control Rules (piecewise-linear hockey-stick HCRs) and quota change stabilizers for simulation and Management Strategy Evaluation (MSE).
+- **Stock Synthesis (`StockSynthesis`)**: Size-structured stock assessment with multiple likelihoods (normal, lognormal, multinomial, Dirichlet-multinomial, Poisson), size composition handling from individual measurements, multi-series data integration, and size-based MSY reference points.
 - **Modern Data & Storage**: Pure CSV, TOML, Apache Parquet, and chunked Zarr array storage without binary legacy dependencies.
 
 For complete mathematical definitions, architectural design, and API contracts across all submodules, refer to [AssessmentToolsAPI.md](file:///c:/home/jae/projects/AssessmentTools/AssessmentToolsAPI.md).
@@ -32,11 +33,20 @@ using AssessmentTools.BiomassDynamics
 sim_bio = simulate_logistic_discrete(2000:2020, fill(10.0, 21); r = 0.35, k = 100.0)
 msy_ref = logistic_msy_reference_points(0.35, 100.0)
 
-# 3. Cohort Analysis & VPA
-using AssessmentTools.CohortAnalysis
-pope_res = popes_cohort_analysis(catches_matrix, 0.2; terminal_f = [0.2, 0.3, 0.4])
-vpa_res = standard_vpa(catches_matrix, 0.2; terminal_f = [0.2, 0.3, 0.4])
-adapt_res = adapt_vpa(catches_matrix, survey_matrix, 0.2)
+# 4. Size-Structured Stock Synthesis (Turing-based)
+using AssessmentTools.StockSynthesis
+size_classes = make_size_classes(10.0, 120.0, 15)
+growth = GrowthParameters(130.0, 0.15; t0 = -0.5, cv = 0.1)
+model = SizeStructuredModel(size_classes, growth, 10, 2, 1; m = 0.2)
+rp = size_msy_reference_points(model)
+# Unified inference: MAP, MCMC, or VI
+result_map = fit_size_structured(obs_catch, obs_indices, size_comps; method = :map)
+
+# 5. Age-Structured Stock Synthesis (Turing-based)
+ac = AgeCompositionData([10, 20, 15, 5]; ages = [1, 2, 3, 4])
+result = fit_age_synthesis(obs_catch, obs_indices, [ac]; method = :map)
+result_mcmc = fit_size_structured(obs_catch, obs_indices, size_comps; method = :mcmc)
+result_vi = fit_size_structured(obs_catch, obs_indices, size_comps; method = :vi)
 
 # 4. Multi-Stage Delay Differential Equations (DDE)
 using AssessmentTools.DelayDifferential

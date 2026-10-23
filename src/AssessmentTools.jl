@@ -15,6 +15,8 @@ A modular fisheries stock assessment and management analysis toolkit in native J
 - `Empirical`: Standalone non-parametric and regression-based methods including catch curves,
   Chapman-Robson survival estimators, Leslie/DeLury depletion models, and Age-Length Keys.
 - `Management`: Harvest Control Rules (HCR) and interannual TAC change stabilizers.
+- `StockSynthesis`: Size-structured stock assessment with multiple likelihoods,
+  size compositions, and multi-series data integration.
 """
 module AssessmentTools
 
@@ -39,6 +41,7 @@ include("Management.jl")
 include("StageMatrix.jl")
 include("PerRecruit.jl")
 include("SimulationEngine.jl")
+include("StockSynthesis.jl")
 
 using LinearAlgebra
 using Statistics
@@ -51,6 +54,7 @@ using .CohortAnalysis
 using .DelayDifferential
 using .Empirical
 using .Management
+using .StockSynthesis
 
 # Re-export submodules for explicit namespaced use
 export StatisticalCatchAtAge
@@ -60,6 +64,7 @@ export DelayDifferential
 export Empirical
 export Management
 export StageMatrix, PerRecruit, SimulationEngine
+export StockSynthesis
 
 # Re-export core StatisticalCatchAtAge API
 export StockData, StockControl, ProjectionControl, StockModel

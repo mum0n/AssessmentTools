@@ -91,7 +91,6 @@ function calc_total_mortality(m::StockModel, log_sel, log_ft_pars, log_m_nodes, 
         misc.n_m_nodes > 1 ||
             error("The natural-mortality random walk needs n_m_nodes >= 2 (got $(misc.n_m_nodes)).")
         s = CubicSpline(unit_nodes(misc.n_m_nodes), log_m_nodes)
-        log_m_devs = zeros(Float64, ny)
         log_m_devs .= 0.0
         if ny > 2
             log_m_devs[2:ny] .= s(collect(0:(ny - 2)) ./ (ny - 1))
@@ -122,7 +121,7 @@ function survivorship(M, nages::Integer; plus_group::Bool = true)
     for j in 2:nages
         lx[j] = lx[j - 1] * exp(-Mv[j - 1])
     end
-    plus_group && (lx[end] /= 1 - exp(-Mv[end]))
+    plus_group && (Mv[end] > 0) && (lx[end] /= 1 - exp(-Mv[end]))
     return lx
 end
 
@@ -324,7 +323,7 @@ function calc_stock_recruitment(m::StockModel, lead, mort, N, log_rt)
             sbt[t] *= exp(-mort.ft[k, t])
         end
     end
-    sbt[ny + 1] = sum(N[ny + 1, :] .* exp.(-mort.M_tot[ny, :]) .* m.fec[ny + 1, :])
+    sbt[ny + 1] = sum(N[ny + 1, :] .* exp.(-mort.M_tot[ny, :] .* sf) .* m.fec[ny + 1, :])
     sbo = lead.ro * phib
     so = lead.kappa / phib
     beta = sr_beta(lead.kappa, sbo, misc.rec_type)

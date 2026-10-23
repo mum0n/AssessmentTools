@@ -28,6 +28,10 @@ deliberately: the Baranov catch residual below very low `F` is poorly scaled, so
 plain secant method that `find_zero` would otherwise choose can step out of the
 physically admissible range.
 
+If the bracket does not straddle a root (same sign at both endpoints), falls back
+to a secant method (`Roots.Order1()`) seeded from `guess`. Throws an informative
+error if both methods fail.
+
 `f` must be scalar and return a `Real`, so it is compatible with `ForwardDiff`
 differentiation.
 
@@ -43,7 +47,26 @@ function solve_scalar_root(f::Function, guess::Real;
     isfinite(guess) || error("guess must be finite, got $guess.")
     lo = min(lower, upper)
     hi = max(lower, upper)
-    return find_zero(f, (lo, hi), Roots.Bisection(), xatol = tol, maxiter = 200)
+    # Try bisection first (robust bracketing). If the bracket does not straddle
+    # a root (f(lo) and f(hi) have the same sign), fall back to a secant method
+    # seeded from the guess, which does not require a sign change.
+    flo, fhi = f(lo), f(hi)
+    if flo == 0.0
+        return lo
+    end
+    if fhi == 0.0
+        return hi
+    end
+    if sign(flo) != sign(fhi)
+        return find_zero(f, (lo, hi), Roots.Bisection(), xatol = tol, maxiter = 200)
+    end
+    # Bracket does not straddle a root — fall back to secant (Order1).
+    try
+        return find_zero(f, guess, Roots.Order1(), xatol = tol, maxiter = 200)
+    catch
+        error("solve_scalar_root: no root found in bracket [$lo, $hi] and secant " *
+              "fallback from guess=$guess also failed. f(lo)=$flo, f(hi)=$fhi.")
+    end
 end
 
 """
