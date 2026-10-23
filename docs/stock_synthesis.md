@@ -148,6 +148,19 @@ model = bayesian_age_synthesis(obs_catch, obs_indices, [ac])
 9. **Reference points**: `size_msy_reference_points(model)`
 10. **Bayesian**: `bayesian_size_structured(obs_catch, obs_indices, size_comps)`
 
+## Weighting Factors
+
+Size and age composition data can include per-group weighting factors to adjust
+for factors unrelated to size/age selectivity (e.g., habitat differences, spatial
+bias). These default to 1.0 when not provided.
+
+- `SizeCompositionData(...; size_weights = [1.0, 2.0, ...])` — per size bin
+- `AgeCompositionData(...; age_weights = [1.0, 0.5, ...])` — per age class
+- `SizeStructuredModel(...; size_weights = [1.0, 2.0, ...])` — model-level default
+
+Weights are applied to predicted proportions in the likelihood and to biomass/yield
+in reference point calculations.
+
 ## References
 
 - Methot, R. D. & Wetzel, C. R. (2013). Stock Synthesis: A biological and statistical framework for fish stock assessment and fishery management. *Fisheries Research*, 142, 86-99.

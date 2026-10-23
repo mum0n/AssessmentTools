@@ -24,6 +24,7 @@ struct SizeCompositionData
     n_fish::Int
     fleet::Int
     year::Int
+    size_weights::Vector{Float64}
 end
 
 """
@@ -32,7 +33,7 @@ end
 Construct from individual length measurements. Bins are computed automatically.
 """
 function SizeCompositionData(lengths::AbstractVector{<:Real}; fleet::Integer = 1, year::Integer = 1,
-                            n_bins::Integer = 20)
+                            n_bins::Integer = 20, size_weights::Union{Nothing, AbstractVector{<:Real}} = nothing)
     ls = Float64.(lengths)
     edges = collect(range(minimum(ls), maximum(ls), length = n_bins + 1))
     counts = zeros(Int, n_bins)
@@ -44,7 +45,9 @@ function SizeCompositionData(lengths::AbstractVector{<:Real}; fleet::Integer = 1
             end
         end
     end
-    return SizeCompositionData(ls, counts, edges, length(ls), fleet, year)
+    sw = isnothing(size_weights) ? ones(Float64, n_bins) : Float64.(size_weights)
+    length(sw) == n_bins || error("size_weights must have length $n_bins.")
+    return SizeCompositionData(ls, counts, edges, length(ls), fleet, year, sw)
 end
 
 """
@@ -54,13 +57,17 @@ end
 Construct from pre-binned counts.
 """
 function SizeCompositionData(counts::AbstractVector{<:Integer}, bin_edges::AbstractVector{<:Real};
-                            fleet::Integer = 1, year::Integer = 1)
+                            fleet::Integer = 1, year::Integer = 1,
+                            size_weights::Union{Nothing, AbstractVector{<:Real}} = nothing)
     ls = Float64[]
     for (i, c) in enumerate(counts)
         mid = (bin_edges[i] + bin_edges[i+1]) / 2
         append!(ls, fill(mid, c))
     end
-    return SizeCompositionData(ls, Int.(counts), Float64.(bin_edges), sum(counts), fleet, year)
+    n_bins = length(counts)
+    sw = isnothing(size_weights) ? ones(Float64, n_bins) : Float64.(size_weights)
+    length(sw) == n_bins || error("size_weights must have length $n_bins.")
+    return SizeCompositionData(ls, Int.(counts), Float64.(bin_edges), sum(counts), fleet, year, sw)
 end
 
 """

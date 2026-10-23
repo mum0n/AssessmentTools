@@ -25,6 +25,7 @@ function size_msy_reference_points(model::SizeStructuredModel)
     n = model.n_size
     midpoints = [sc.midpoint for sc in model.size_classes]
     w = model.w_at_size[1, :]
+    sw = model.size_weights[1, :]
     m_vec = model.m_size[1, :]
 
     # Unfished biomass: survivorship under natural mortality
@@ -54,7 +55,7 @@ function size_msy_reference_points(model::SizeStructuredModel)
         if m_vec[n] + fmsy * sel[n] > 0
             surv_f[n] /= (1 - exp(-(m_vec[n] + fmsy * sel[n])))
         end
-        y_f = fmsy * sum(surv_f .* sel .* w)
+        y_f = fmsy * sum(surv_f .* sel .* w .* sw)
 
         dF = 1e-6
         F2 = fmsy + dF
@@ -65,7 +66,7 @@ function size_msy_reference_points(model::SizeStructuredModel)
         if m_vec[n] + F2 * sel[n] > 0
             surv_f2[n] /= (1 - exp(-(m_vec[n] + F2 * sel[n])))
         end
-        y_f2 = F2 * sum(surv_f2 .* sel .* w)
+        y_f2 = F2 * sum(surv_f2 .* sel .* w .* sw)
         dy_dF = (y_f2 - y_f) / dF
         if abs(dy_dF) < 1e-10
             break
@@ -81,8 +82,8 @@ function size_msy_reference_points(model::SizeStructuredModel)
     if m_vec[n] + fmsy * sel[n] > 0
         surv_f[n] /= (1 - exp(-(m_vec[n] + fmsy * sel[n])))
     end
-    bmsy = sum(surv_f .* w)
-    msy = fmsy * sum(surv_f .* sel .* w)
+    bmsy = sum(surv_f .* w .* sw)
+    msy = fmsy * sum(surv_f .* sel .* w .* sw)
 
     return (bmsy = bmsy, msy = msy, fmsy = fmsy, umsy = msy / (bmsy + 1e-10))
 end
@@ -94,9 +95,9 @@ end
                              prior_r::Tuple{Real, Real} = (0.35, 0.15),
                              prior_k::Tuple{Real, Real} = (100.0, 30.0),
                              prior_q::Tuple{Real, Real} = (1.0, 0.25),
-                             prior_proc_sd::Real = 0.10,
-                             proc_sd_range::Tuple{Real, Real} = (0.01, 0.40),
-                             obs_sd_range::Tuple{Real, Real} = (0.02, 0.50)) -> DynamicPPL.Model
+                                          prior_proc_sd::Real = 0.10,
+                                          proc_sd_range::Tuple{Real, Real} = (0.01, 0.40),
+                                          obs_sd_range::Tuple{Real, Real} = (0.02, 0.50)) -> DynamicPPL.Model
 
 Bayesian size-structured model in Turing.jl. Uses multiple likelihoods:
 - Catch: lognormal on total catch
@@ -156,6 +157,10 @@ via InferenceBridge.
         n_fish > 0 || continue
         # Predicted proportions (from model; simplified as uniform here)
         pred_prop = fill(1.0 / length(obs_counts), length(obs_counts))
+        # Apply size weights from SizeCompositionData if provided
+        if length(sc.size_weights) == length(obs_counts)
+            pred_prop .*= sc.size_weights
+        end
         # Normalize to sum to 1
         pred_prop ./= sum(pred_prop)
         # Multinomial likelihood

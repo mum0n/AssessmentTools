@@ -70,6 +70,7 @@ Container for a size-structured stock assessment model.
 - `w_at_size::Vector{Float64}`: Weight at size (midpoint).
 - `mat_at_size::Vector{Float64}`: Maturity at size.
 - `fec_at_size::Vector{Float64}`: Fecundity at size.
+- `size_weights::Matrix{Float64}`: Weighting factor per size group (default 1.0), for factors unrelated to size selectivity (e.g., habitat differences).
 - `sel_params::Matrix{Float64}`: Catch selectivity parameters (n_fleets x n_sel_params).
 - `survey_sel_params::Matrix{Float64}`: Survey selectivity parameters (n_surveys x n_sel_params).
 - `q::Vector{Float64}`: Survey catchabilities.
@@ -87,6 +88,7 @@ struct SizeStructuredModel
     w_at_size::Matrix{Float64}       # (n_sexes x n_size)
     mat_at_size::Matrix{Float64}     # (n_sexes x n_size) — sex-specific maturity oogives
     fec_at_size::Matrix{Float64}     # (n_sexes x n_size)
+    size_weights::Matrix{Float64}     # (n_sexes x n_size) — weighting factor per size group (default 1.0)
     sel_params::Matrix{Float64}      # (n_fleets x n_sel_params) — catch selectivity
     survey_sel_params::Array{Float64,3}  # (n_surveys x n_sexes x n_sel_params) — sex-specific survey selectivity
     q::Vector{Float64}              # (n_surveys)
@@ -234,6 +236,7 @@ function SizeStructuredModel(size_classes::Vector{SizeClass},
                              w_at_size::Union{Nothing, AbstractVecOrMat{<:Real}} = nothing,
                              mat_at_size::Union{Nothing, AbstractVecOrMat{<:Real}} = nothing,
                              fec_at_size::Union{Nothing, AbstractVecOrMat{<:Real}} = nothing,
+                             size_weights::Union{Nothing, AbstractVecOrMat{<:Real}} = nothing,
                              n_sel_params::Integer = 2,
                              survey_n_sel_params::Integer = 2,
                              q::Union{Nothing, AbstractVector{<:Real}} = nothing,
@@ -261,6 +264,15 @@ function SizeStructuredModel(size_classes::Vector{SizeClass},
         Float64.(fec_at_size)
     end
 
+    # Size weights: (n_sexes x n_size), defaulting to 1.0
+    sw_mat = if isnothing(size_weights)
+        ones(Float64, n_sexes, n)
+    elseif ndims(size_weights) == 1
+        repeat(Float64.(size_weights)', n_sexes, 1)
+    else
+        Float64.(size_weights)
+    end
+
     # Catch selectivity: (n_fleets x n_sel_params)
     sel = isnothing(catch_sel_params) ? zeros(Float64, n_fleets, n_sel_params) : Float64.(catch_sel_params)
 
@@ -281,6 +293,6 @@ function SizeStructuredModel(size_classes::Vector{SizeClass},
 
     q_vec = isnothing(q) ? ones(Float64, n_surveys) : Float64.(q)
     return SizeStructuredModel(n, n_sexes, size_classes, growth, n_years, n_fleets, n_surveys,
-                               Float64(m), m_size_mat, w_mat, mat_mat, fec_mat,
+                               Float64(m), m_size_mat, w_mat, mat_mat, fec_mat, sw_mat,
                                sel, ssp, q_vec)
 end

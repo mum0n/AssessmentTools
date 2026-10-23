@@ -22,16 +22,20 @@ struct AgeCompositionData
     n_fish::Int
     fleet::Int
     year::Int
+    age_weights::Vector{Float64}
 end
 
 """
     AgeCompositionData(counts::AbstractVector{<:Integer}; ages, fleet=1, year=1)
 """
 function AgeCompositionData(counts::AbstractVector{<:Integer}; ages::Union{Nothing, AbstractVector{<:Integer}} = nothing,
-                           fleet::Integer = 1, year::Integer = 1)
+                           fleet::Integer = 1, year::Integer = 1,
+                           age_weights::Union{Nothing, AbstractVector{<:Real}} = nothing)
     c = Int.(counts)
     a = isnothing(ages) ? collect(1:length(c)) : Int.(ages)
-    return AgeCompositionData(a, c, sum(c), fleet, year)
+    aw = isnothing(age_weights) ? ones(Float64, length(c)) : Float64.(age_weights)
+    length(aw) == length(c) || error("age_weights must have length $(length(c)).")
+    return AgeCompositionData(a, c, sum(c), fleet, year, aw)
 end
 
 """
@@ -134,6 +138,10 @@ F (fishing mortality), process/observation error.
         pred_prop = zeros(Float64, length(obs_counts))
         for a in 1:length(obs_counts)
             pred_prop[a] = exp(-m * a)
+        end
+        # Apply age weights if provided
+        if length(ac.age_weights) == length(obs_counts)
+            pred_prop .*= ac.age_weights
         end
         pred_prop ./= sum(pred_prop)
         obs_counts ~ Multinomial(n_fish, pred_prop)
