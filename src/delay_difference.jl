@@ -157,8 +157,8 @@ end
                                     b0_lower = 5.0, b0_upper = 200.0,
                                     prior_q_mu = 1.0, prior_q_sd = 0.30,
                                     q_lower = 0.05, q_upper = 5.0,
-                                    prior_proc_sd = 0.10, prior_proc_sd_sd = 0.05,
-                                    proc_sd_lower = 0.01, proc_sd_upper = 0.40,
+                                    prior_sigma = 0.10, prior_sigma_sd = 0.05,
+                                    sigma_lower = 0.01, sigma_upper = 0.40,
                                     prior_obs_sd_sd = 0.05,
                                     obs_sd_lower = 0.02, obs_sd_upper = 0.60,
                                     mu_floor = 1.0e-4)
@@ -191,10 +191,10 @@ defaults to `cfg.s`, the baseline survival from the configuration.
                                                 prior_q_sd::Real = 0.30,
                                                 q_lower::Real = 0.05,
                                                 q_upper::Real = 5.0,
-                                                prior_proc_sd::Real = 0.10,
-                                                prior_proc_sd_sd::Real = 0.05,
-                                                proc_sd_lower::Real = 0.01,
-                                                proc_sd_upper::Real = 0.40,
+                                                prior_sigma::Real = 0.10,
+                                                prior_sigma_sd::Real = 0.05,
+                                                sigma_lower::Real = 0.01,
+                                                sigma_upper::Real = 0.40,
                                                 prior_obs_sd_sd::Real = 0.05,
                                                 obs_sd_lower::Real = 0.02,
                                                 obs_sd_upper::Real = 0.60,
@@ -213,8 +213,8 @@ defaults to `cfg.s`, the baseline survival from the configuration.
     # Survey catchability q (mapping biomass to relative survey index)
     q ~ truncated(Normal(prior_q_mu, prior_q_sd), q_lower, q_upper)
     # Log-scale process error standard deviation
-    proc_sd ~ truncated(Normal(prior_proc_sd, prior_proc_sd_sd),
-                        proc_sd_lower, proc_sd_upper)
+    sigma ~ truncated(Normal(prior_sigma, prior_sigma_sd),
+                        sigma_lower, sigma_upper)
     # Observation error standard deviation
     obs_sd ~ truncated(Normal(obs_cv, prior_obs_sd_sd), obs_sd_lower, obs_sd_upper)
 
@@ -223,8 +223,9 @@ defaults to `cfg.s`, the baseline survival from the configuration.
     wk = cfg.wk
 
     # Latent state trajectories
-    b = Vector{Float64}(undef, ny)
-    n = Vector{Float64}(undef, ny)
+    b = Vector{Real}(undef, ny)
+    n = Vector{Real}(undef, ny)
+    log_b_next = Vector{Real}(undef, ny - 1)
 
     b[1] = b0
     n[1] = b0 / wk
@@ -242,8 +243,8 @@ defaults to `cfg.s`, the baseline survival from the configuration.
 
         # Process model with stochastic lognormal deviations around the deterministic
         # expectation defined once in `delay_difference_step`.
-        log_b_next ~ Normal(log(max(1e-4, exp_b)), proc_sd)
-        b[t + 1] = exp(log_b_next)
+        log_b_next[t] ~ Normal(log(max(1e-4, exp_b)), sigma)
+        b[t + 1] = exp(log_b_next[t])
         n[t + 1] = max(1e-4, exp_n)
     end
 
@@ -252,7 +253,7 @@ defaults to `cfg.s`, the baseline survival from the configuration.
         s_val = obs_survey[t]
         if !ismissing(s_val) && isfinite(s_val) && s_val > 0.0
             s_pred = q * b[t]
-            s_val ~ LogNormal(log(max(1e-4, s_pred)), obs_sd)
+            obs_survey[t] ~ LogNormal(log(max(1e-4, s_pred)), obs_sd)
         end
     end
 
